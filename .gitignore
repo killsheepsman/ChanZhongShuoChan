@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Node/Vite
+frontend/node_modules/
+frontend/dist/
+
+# Runtime data
+data/
+logs/
+.browser-profile/
+
+# Local build outputs
+release/
+
+# Local temporary/debug files
+tmp_*.json
+*.sqlite3
+analysis/*.json
+backend/*.log
+603703验证报告.txt
+
+# Large/reference-only local documents
+*.pdf

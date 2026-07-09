@@ -1,0 +1,130 @@
+缠论核心规则表（可编码版）
+表A：中枢识别规则
+规则编号	输入数据	判定逻辑	输出结果	边界条件
+A-1	线段序列（至少3条）	取连续3条线段，计算三者重叠区间	候选中枢	若三者无重叠 → 继续等待下一条线段
+A-2	3条线段的高低点	高点的最低值 = min(seg1.high, seg2.high, seg3.high)	ZG（中枢高点）	必须用线段的高点，不是笔的高点
+A-3	3条线段的低点	低点的最高值 = max(seg1.low, seg2.low, seg3.low)	ZD（中枢低点）	必须用线段的低点，不是笔的低点
+A-4	ZG 和 ZD	若 ZG > ZD，则重叠区间有效	中枢区间 = [ZD, ZG]	若 ZG < ZD → 数据异常，返回错误
+A-5	后续线段（第4条起）	新线段与当前中枢是否有重叠	① 有重叠 → 中枢延续/扩展
+② 无重叠 → 中枢结束，新中枢可能形成	重叠判断：新线段.high > ZD 且 新线段.low < ZG
+A-6	中枢方向判定	比较当前中枢与前一个中枢的 ZD/ZG 关系	ZD_当前 > ZG_前 → 上涨中枢
+ZG_当前 < ZD_前 → 下跌中枢	首次出现的中枢不判定方向
+A-7	中枢级别	递归层级：笔→线段→中枢	中枢级别 = 构成它的线段所在级别	日线线段构成 → 日线中枢
+伪代码框架：
+
+python
+def identify_centers(segments):
+    centers = []
+    i = 0
+    while i <= len(segments) - 3:
+        seg1, seg2, seg3 = segments[i], segments[i+1], segments[i+2]
+        ZG = min(seg1.high, seg2.high, seg3.high)
+        ZD = max(seg1.low, seg2.low, seg3.low)
+        if ZG > ZD:
+            center = Center(ZG, ZD, level=segments.level)
+            # 检查后续线段是否延续该中枢
+            j = i + 3
+            while j < len(segments):
+                if segments[j].high > ZD and segments[j].low < ZG:
+                    # 有重叠，中枢延续，更新ZG/ZD？
+                    # 注：中枢延伸规则较复杂，此处简化
+                    j += 1
+                else:
+                    break
+            centers.append(center)
+            i = j
+        else:
+            i += 1
+    return centers
+表B：背驰判定规则（买卖点核心信号）
+规则编号	输入数据	判定逻辑	输出结果	边界条件
+B-1	进入段（a段）+ 离开段（b段）	比较 b段力度 < a段力度 × 阈值（如0.85）	底背驰/顶背驰	阈值可配置，默认0.85~0.95
+B-2	进入段价格区间	a段起点价 - a段终点价（下跌）或 a段终点价 - a段起点价（上涨）	价格幅度	取绝对值
+B-3	离开段价格区间	b段起点价 - b段终点价（下跌）或 b段终点价 - b段起点价（上涨）	价格幅度	取绝对值
+B-4	MACD面积（辅助）	计算 a段 和 b段 对应的MACD柱状图面积（绿柱/红柱）	MACD面积比	需有MACD指标数据
+B-5	背驰方向判定	当前走势方向（上涨/下跌）	下跌段 b幅度 < a幅度 → 底背驰
+上涨段 b幅度 < a幅度 → 顶背驰	方向由中枢前后走势判定
+B-6	盘整背驰（可选）	只有一个中枢时，比较该中枢的进入段和离开段	盘整背驰 → 仅产生次级别买卖点，非标准三类	盘整背驰不产生标准一买/一卖
+伪代码框架：
+
+python
+def check_divergence(a_start, a_end, b_start, b_end, direction):
+    # direction: 'up' or 'down'
+    if direction == 'down':
+        a_amplitude = a_start - a_end
+        b_amplitude = b_start - b_end
+    else:  # 'up'
+        a_amplitude = a_end - a_start
+        b_amplitude = b_end - b_start
+    
+    # 必须是正数（下跌段起点>终点，取正）
+    a_amplitude = abs(a_amplitude)
+    b_amplitude = abs(b_amplitude)
+    
+    if b_amplitude < a_amplitude * 0.9:  # 0.9为阈值，可配置
+        return True  # 发生背驰
+    else:
+        return False
+表C：三类买点判定规则
+规则编号	买点类型	输入数据	判定逻辑（必须同时满足）	输出	优先级
+C-1	一买	中枢列表 + 背驰信号 + 当前价格	① 当前处于下跌趋势（≥2个下跌中枢）
+② 当前价格 < 最后一个中枢.ZD
+③ 背驰信号 = TRUE（进入段 vs 离开段）
+④ 离开段出现底分型确认	一买 @ 离开段最低点	3（最低）
+C-2	二买	一买信号 + 价格序列	① 一买已确认（status = CONFIRMED）
+② 当前处于一买后的反弹段
+③ 回踩低点 ≥ 一买价格
+④ 次级别出现底分型或背驰	二买 @ 回踩低点	2
+C-3	三买	中枢列表 + 当前价格	① 已形成一个上涨中枢
+② 当前向上离开中枢（价格 > ZG）
+③ 次级别回抽低点 > ZG（不进中枢）
+④ 次级别回抽段出现底分型或背驰	三买 @ 回抽低点	1（最高）
+伪代码框架：
+
+python
+def identify_buy_points(centers, divergence_signal, prices, level):
+    signals = []
+    
+    # 一买
+    if len(centers) >= 2 and is_down_trend(centers):
+        last_center = centers[-1]
+        if current_price < last_center.ZD and divergence_signal:
+            # 检查离开段是否出现底分型
+            if has_bottom_fractal(prices, level):
+                signals.append(BuySignal(1, last_center.lowest_price))
+    
+    # 二买
+    if has_first_buy_confirmed():
+        current_low = get_current_retracement_low()
+        if current_low >= first_buy_price:
+            signals.append(BuySignal(2, current_low))
+    
+    # 三买
+    for center in centers:
+        if center.type == 'up' and center.is_breakout():
+            retracement_low = get_retracement_low_after_breakout(center)
+            if retracement_low > center.ZG:
+                signals.append(BuySignal(3, retracement_low))
+    
+    return signals
+表D：三类卖点判定规则
+规则编号	卖点类型	输入数据	判定逻辑（必须同时满足）	输出	优先级
+D-1	一卖	中枢列表 + 背驰信号 + 当前价格	① 当前处于上涨趋势（≥2个上涨中枢）
+② 当前价格 > 最后一个中枢.ZG
+③ 背驰信号 = TRUE（进入段 vs 离开段）
+④ 离开段出现顶分型确认	一卖 @ 离开段最高点	3（最低）
+D-2	二卖	一卖信号 + 价格序列	① 一卖已确认（status = CONFIRMED）
+② 当前处于一卖后的下跌回调段
+③ 反弹高点 ≤ 一卖价格
+④ 次级别出现顶分型或背驰	二卖 @ 反弹高点	2
+D-3	三卖	中枢列表 + 当前价格	① 已形成一个下跌中枢
+② 当前向下离开中枢（价格 < ZD）
+③ 次级别回抽高点 < ZD（不进中枢）
+④ 次级别回抽段出现顶分型或背驰	三卖 @ 回抽高点	1（最高）
+表E：优先级与互斥规则（防止错误信号叠加）
+规则编号	检查项	判定逻辑	处理动作
+E-1	同一价格双向信号	当前价格是否同时满足买点和卖点条件	若同时触发 → 保留高优先级（三买/三卖 > 二买/二卖 > 一买/一卖），丢弃低优先级
+E-2	未完成走势过滤	离开段是否已确认结束（次级别出现反向分型）	若未确认 → 标记 PENDING，不输出最终信号
+E-3	级别过滤	信号的级别是否等于预设的“主操作级别”	若不匹配 → 标记为“次级别参考”，不触发主策略操作
+E-4	信号时效性	信号是否在最近 N 根K线内产生	若超过 N 根（如10根）→ 标记 EXPIRED，不再触发操作
+E-5	背驰共振增强	本级别出现信号 + 次级别同向背驰	若共振 → 强度评分 +1（最大5分）
