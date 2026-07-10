@@ -18,14 +18,13 @@ def detect_buy_sell_points(
     provisional records emitted here belong to the last running stroke/segment,
     so they can be rendered as dashed observation marks instead of facts.
     """
-    del klines  # Kept for the public API used by the service layer.
     stroke_items = strokes or []
     first_points = _first_points(segments, centers, divergences)
     first_points = [_classify_first_point(signal, segments) for signal in first_points]
     first_points = _dedupe_signals(first_points)
     second_points = _second_points(stroke_items, first_points)
     third_points = _third_points(segments, centers, stroke_items)
-    pending_points = _pending_points(stroke_items, centers)
+    pending_points = _pending_points(stroke_items, centers, klines or [])
     return _dedupe_signals(sorted([*first_points, *second_points, *third_points, *pending_points], key=lambda item: item.index))
 
 
@@ -41,10 +40,10 @@ def _first_points(
         center = _latest_center_before_segment(leave, centers, segments)
         if center is None:
             continue
-        if divergence.side == "buy" and leave.direction == "down" and leave.low < center.zd:
-            signals.append(_segment_signal("buy", 1, leave, leave.low, _first_confidence(divergence), "trend bottom divergence after leaving center", center.id))
-        elif divergence.side == "sell" and leave.direction == "up" and leave.high > center.zg:
-            signals.append(_segment_signal("sell", 1, leave, leave.high, _first_confidence(divergence), "trend top divergence after leaving center", center.id))
+        if divergence.side == "buy" and leave.direction == "down" and leave.end_price == leave.low and leave.low < center.zd:
+            signals.append(_segment_signal("buy", 1, leave, _first_confidence(divergence), "trend bottom divergence after leaving center", center.id))
+        elif divergence.side == "sell" and leave.direction == "up" and leave.end_price == leave.high and leave.high > center.zg:
+            signals.append(_segment_signal("sell", 1, leave, _first_confidence(divergence), "trend top divergence after leaving center", center.id))
     return signals
 
 
@@ -58,11 +57,11 @@ def _second_points(strokes: list[Stroke], first_points: list[BuySellSignal]) -> 
         if reaction is None or retest is None:
             continue
         tolerance = max(abs(first.price) * 0.003, 0.01)
-        if first.side == "buy" and retest.low >= first.price - tolerance:
-            signal = _stroke_signal("buy", 2, retest, retest.low, _second_confidence(first, reaction, retest), "retest after buy-1 does not break its low", first.center_id)
+        if first.side == "buy" and retest.end_price == retest.low and retest.low >= first.price - tolerance:
+            signal = _stroke_signal("buy", 2, retest, _second_confidence(first, reaction, retest), "retest after buy-1 does not break its low", first.center_id)
             signals.append(_classify_follow_through(signal, strokes))
-        elif first.side == "sell" and retest.high <= first.price + tolerance:
-            signal = _stroke_signal("sell", 2, retest, retest.high, _second_confidence(first, reaction, retest), "retest after sell-1 does not break its high", first.center_id)
+        elif first.side == "sell" and retest.end_price == retest.high and retest.high <= first.price + tolerance:
+            signal = _stroke_signal("sell", 2, retest, _second_confidence(first, reaction, retest), "retest after sell-1 does not break its high", first.center_id)
             signals.append(_classify_follow_through(signal, strokes))
     return signals
 
@@ -76,15 +75,15 @@ def _third_points(segments: list[Segment], centers: list[Center], strokes: list[
         after = [segment for segment in segments if segment.id > last_id]
         for leave, retest in zip(after, after[1:]):
             if leave.direction == "up" and leave.high > center.zg and retest.direction == "down":
-                if retest.low > center.zg:
-                    signal = _segment_signal("buy", 3, retest, retest.low, 0.72, "upward leave and retest stays above ZG", center.id)
+                if retest.end_price == retest.low and retest.low > center.zg:
+                    signal = _segment_signal("buy", 3, retest, 0.72, "upward leave and retest stays above ZG", center.id)
                     signals.append(_classify_third_point(signal, strokes, center))
                     break
                 if retest.low <= center.zg:
                     break
             if leave.direction == "down" and leave.low < center.zd and retest.direction == "up":
-                if retest.high < center.zd:
-                    signal = _segment_signal("sell", 3, retest, retest.high, 0.72, "downward leave and retest stays below ZD", center.id)
+                if retest.end_price == retest.high and retest.high < center.zd:
+                    signal = _segment_signal("sell", 3, retest, 0.72, "downward leave and retest stays below ZD", center.id)
                     signals.append(_classify_third_point(signal, strokes, center))
                     break
                 if retest.high >= center.zd:
@@ -92,19 +91,36 @@ def _third_points(segments: list[Segment], centers: list[Center], strokes: list[
     return signals
 
 
-def _pending_points(strokes: list[Stroke], centers: list[Center]) -> list[BuySellSignal]:
+def _pending_points(
+    strokes: list[Stroke], centers: list[Center], klines: list[KLine]
+) -> list[BuySellSignal]:
     """Return only the current, unconfirmed first-point observation."""
-    if not strokes or not centers:
+    if not strokes or not centers or not klines:
         return []
     current = strokes[-1]
+    latest = klines[-1]
+    if current.end_index != latest.index or current.end_time != latest.time:
+        return []
     center = _latest_center_before_index(current.start_index, centers)
     if center is None or current.start_index <= center.end_index:
         return []
     previous = _previous_same_direction(strokes[:-1], current.direction, center.start_index)
-    if current.direction == "down" and current.low < center.zd and previous and _stroke_power(current) < _stroke_power(previous):
-        return [_stroke_signal("buy", 1, current, current.end_price, 0.56, "running downward leave is weaker than prior down stroke", center.id)]
-    if current.direction == "up" and current.high > center.zg and previous and _stroke_power(current) < _stroke_power(previous):
-        return [_stroke_signal("sell", 1, current, current.end_price, 0.56, "running upward leave is weaker than prior up stroke", center.id)]
+    if (
+        current.direction == "down"
+        and current.end_price == current.low
+        and current.end_price < center.zd
+        and previous
+        and _stroke_power(current) < _stroke_power(previous)
+    ):
+        return [_stroke_signal("buy", 1, current, 0.56, "running downward leave is weaker than prior down stroke", center.id)]
+    if (
+        current.direction == "up"
+        and current.end_price == current.high
+        and current.end_price > center.zg
+        and previous
+        and _stroke_power(current) < _stroke_power(previous)
+    ):
+        return [_stroke_signal("sell", 1, current, 0.56, "running upward leave is weaker than prior up stroke", center.id)]
     return []
 
 
@@ -276,17 +292,17 @@ def _signal_rank(signal: BuySellSignal) -> tuple[int, float, int]:
     return status, signal.confidence, signal.type
 
 
-def _segment_signal(side: str, signal_type: int, segment: Segment, price: float, confidence: float, reason: str, center_id: int | None) -> BuySellSignal:
+def _segment_signal(side: str, signal_type: int, segment: Segment, confidence: float, reason: str, center_id: int | None) -> BuySellSignal:
     return BuySellSignal(
         id=f"{side}-{signal_type}-seg-{segment.id}", side=side, type=signal_type,
-        index=segment.end_index, time=segment.end_time, price=price, status="candidate",
+        index=segment.end_index, time=segment.end_time, price=segment.end_price, status="candidate",
         confidence=confidence, reason=reason, center_id=center_id, segment_id=segment.id,
     )  # type: ignore[arg-type]
 
 
-def _stroke_signal(side: str, signal_type: int, stroke: Stroke, price: float, confidence: float, reason: str, center_id: int | None) -> BuySellSignal:
+def _stroke_signal(side: str, signal_type: int, stroke: Stroke, confidence: float, reason: str, center_id: int | None) -> BuySellSignal:
     return BuySellSignal(
         id=f"{side}-{signal_type}-stroke-{stroke.end_index}", side=side, type=signal_type,
-        index=stroke.end_index, time=stroke.end_time, price=price, status="candidate",
+        index=stroke.end_index, time=stroke.end_time, price=stroke.end_price, status="candidate",
         confidence=confidence, reason=reason, center_id=center_id, segment_id=None,
     )  # type: ignore[arg-type]
