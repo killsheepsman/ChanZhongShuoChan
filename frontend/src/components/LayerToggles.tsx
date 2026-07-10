@@ -8,6 +8,8 @@ const LABELS: Record<string, string> = {
   strokes: "笔",
   segments: "线段",
   centers: "中枢",
+  divergences: "背驰",
+  theory: "理论标记",
   signals: "买卖点",
 };
 

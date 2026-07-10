@@ -496,3 +496,36 @@ select {
   background: #422006;
   border: 1px solid #92400e;
 }
+
+
+.data-status-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  display: grid;
+  gap: 5px;
+  margin-top: auto;
+  padding: 9px 16px 10px;
+  border-top: 1px solid #334155;
+  background: #0f172a;
+  box-shadow: 0 -6px 16px rgba(2, 6, 23, 0.35);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.data-status-footer.ok { border-top-color: #166534; }
+.data-status-footer.warning { border-top-color: #b45309; background: #23190a; }
+
+.data-status-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 16px;
+  color: #cbd5e1;
+}
+
+.data-status-summary strong { color: #f8fafc; font-size: 13px; }
+.data-status-footer.ok .data-status-summary strong { color: #86efac; }
+.data-status-footer.warning .data-status-summary strong { color: #fde68a; }
+.data-status-detail { color: #e2e8f0; overflow-wrap: anywhere; }
+.data-status-causes { color: #94a3b8; overflow-wrap: anywhere; }

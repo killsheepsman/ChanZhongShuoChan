@@ -11,6 +11,7 @@ from .models import KLine, Stroke
 from .segment import detect_segments
 from .signals import detect_buy_sell_points
 from .stroke import detect_strokes
+from .theory import detect_theory_marks
 from .trend import classify_trend
 
 
@@ -25,6 +26,7 @@ def analyze_klines(klines: list[KLine]) -> dict:
     macd = calculate_macd(processed)
     divergences = detect_divergences(confirmed_segments, centers, macd)
     signals = detect_buy_sell_points(segments, centers, divergences, processed, strokes)
+    theory_marks = detect_theory_marks(processed, segments, centers, divergences, signals, macd)
     trend = classify_trend(centers)
 
     return {
@@ -36,6 +38,7 @@ def analyze_klines(klines: list[KLine]) -> dict:
         "divergences": [asdict(item) for item in divergences],
         "macd": macd,
         "signals": [asdict(item) for item in signals],
+        "theory_marks": [asdict(item) for item in theory_marks],
         "trend": trend,
         "summary": {
             "kline_count": len(processed),
@@ -45,6 +48,7 @@ def analyze_klines(klines: list[KLine]) -> dict:
             "center_count": len(centers),
             "divergence_count": len(divergences),
             "signal_count": len(signals),
+            "theory_mark_count": len(theory_marks),
         },
     }
 
@@ -70,7 +74,7 @@ def _append_pending_stroke(strokes: list[Stroke], klines: list[KLine]) -> list[S
                 start_time=last.end_time,
                 end_time=latest.time,
                 start_price=last.end_price,
-                end_price=latest.close,
+                end_price=latest.low,
                 direction="down",
                 high=max(last.end_price, latest.high),
                 low=min(last.end_price, latest.low),
@@ -88,7 +92,7 @@ def _append_pending_stroke(strokes: list[Stroke], klines: list[KLine]) -> list[S
                 start_time=last.end_time,
                 end_time=latest.time,
                 start_price=last.end_price,
-                end_price=latest.close,
+                end_price=latest.high,
                 direction="up",
                 high=max(last.end_price, latest.high),
                 low=min(last.end_price, latest.low),

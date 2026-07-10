@@ -28,17 +28,34 @@ def detect_fractals(klines: list[KLine], min_gap: int = 1) -> list[Fractal]:
 
 
 def _dedupe_alternating(fractals: list[Fractal], min_gap: int) -> list[Fractal]:
+    """Keep only an ordered, strictly alternating fractal sequence.
+
+    A same-side fractal can replace the pending endpoint when it is more
+    extreme. An opposite-side fractal which is too close is not a valid
+    replacement: changing the type of an accepted pivot can create adjacent
+    tops/bottoms and strokes whose price direction is impossible.
+    """
     result: list[Fractal] = []
     for fractal in fractals:
         if not result:
             result.append(fractal)
             continue
+
         last = result[-1]
-        if fractal.kind != last.kind and fractal.index - last.index > min_gap:
-            result.append(fractal)
+        if fractal.kind == last.kind:
+            if _more_extreme(fractal, last):
+                result[-1] = fractal
             continue
-        if fractal.kind == "top" and fractal.price > last.price:
-            result[-1] = fractal
-        elif fractal.kind == "bottom" and fractal.price < last.price:
-            result[-1] = fractal
+
+        if fractal.index - last.index > min_gap:
+            result.append(fractal)
+
+        # An opposite fractal inside the minimum distance is ignored. It must
+        # never replace ``last`` because that violates the alternation rule.
     return result
+
+
+def _more_extreme(candidate: Fractal, reference: Fractal) -> bool:
+    if candidate.kind == "top":
+        return candidate.price > reference.price
+    return candidate.price < reference.price

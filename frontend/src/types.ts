@@ -106,6 +106,26 @@ export interface Divergence {
   reason: string;
 }
 
+export interface TheoryMark {
+  id: string;
+  kind:
+    | "segment_break"
+    | "center_formed"
+    | "center_extend"
+    | "center_leave"
+    | "center_retest"
+    | "trend_state"
+    | "macd_zero";
+  index: number;
+  time: string;
+  price: number;
+  label: string;
+  reason: string;
+  side: "buy" | "sell" | null;
+  center_id: number | null;
+  segment_id: number | null;
+}
+
 export interface AnalysisResponse {
   request: {
     symbol: string;
@@ -131,6 +151,7 @@ export interface AnalysisResponse {
   centers: Center[];
   divergences: Divergence[];
   signals: Signal[];
+  theory_marks: TheoryMark[];
   trend?: {
     type: "unclassified" | "consolidation" | "trend";
     direction: "up" | "down" | null;

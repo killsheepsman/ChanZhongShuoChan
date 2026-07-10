@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-DB_PATH = Path(__file__).resolve().parents[3] / "data" / "signals_rules_v12.sqlite3"
+DB_PATH = Path(__file__).resolve().parents[3] / "data" / "signals_rules_v13.sqlite3"
 _DB_LOCK = threading.Lock()
 
 

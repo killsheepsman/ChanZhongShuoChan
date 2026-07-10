@@ -12,6 +12,7 @@ $FrontendDir = Join-Path $Root "frontend"
 $LogDir = Join-Path $Root "logs"
 $BrowserProfileDir = Join-Path $Root ".browser-profile"
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
+$Node = Join-Path $env:ProgramFiles "nodejs\node.exe"
 
 if (-not (Test-Path -LiteralPath $Python)) {
   $BundledPython = "C:\Users\77247\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
@@ -68,11 +69,25 @@ function Start-ServiceProcess {
     [string]$ErrLog
   )
   Write-Host "$Title starting in background..." -ForegroundColor Green
-  return Start-Process -FilePath $FilePath `
-    -ArgumentList $ArgumentList `
-    -WorkingDirectory $WorkingDirectory `
-    -WindowStyle Hidden `
-    -PassThru
+
+  # ProcessStartInfo avoids a PowerShell Start-Process failure when the desktop`n  # shell exposes both Path and PATH in the inherited environment.
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $FilePath
+  $startInfo.WorkingDirectory = $WorkingDirectory
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $false
+  $startInfo.RedirectStandardError = $false
+  $startInfo.Arguments = (($ArgumentList | ForEach-Object {
+    '"' + ([string]$_).Replace('"', '\"') + '"'
+  }) -join ' ')
+
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  if (-not $process.Start()) {
+    throw "Unable to start $Title."
+  }
+  return $process
 }
 
 function Find-Browser {
@@ -133,8 +148,8 @@ if (Test-PortListening 5173) {
   Start-ServiceProcess `
     -Title "Frontend" `
     -WorkingDirectory $FrontendDir `
-    -FilePath "npm.cmd" `
-    -ArgumentList @("run", "dev", "--", "--port", "5173") `
+    -FilePath $Node `
+    -ArgumentList @((Join-Path $FrontendDir "node_modules\vite\bin\vite.js"), "--host", "127.0.0.1", "--port", "5173") `
     -OutLog (Join-Path $LogDir "frontend.out.log") `
     -ErrLog (Join-Path $LogDir "frontend.err.log") | Out-Null
 }

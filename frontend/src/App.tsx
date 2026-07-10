@@ -31,6 +31,8 @@ export function App() {
     strokes: true,
     segments: true,
     centers: true,
+    divergences: true,
+    theory: true,
     signals: true,
   });
   const [data, setData] = useState<AnalysisResponse | null>(null);

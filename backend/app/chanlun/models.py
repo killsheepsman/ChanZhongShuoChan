@@ -9,6 +9,15 @@ FractalKind = Literal["top", "bottom"]
 SignalSide = Literal["buy", "sell"]
 SignalStatus = Literal["candidate", "confirmed", "invalidated"]
 SegmentStatus = Literal["IS_RUNNING", "CONFIRMED"]
+TheoryMarkKind = Literal[
+    "segment_break",
+    "center_formed",
+    "center_extend",
+    "center_leave",
+    "center_retest",
+    "trend_state",
+    "macd_zero",
+]
 
 
 @dataclass(frozen=True)
@@ -96,5 +105,19 @@ class BuySellSignal:
     status: SignalStatus
     confidence: float
     reason: str
+    center_id: int | None = None
+    segment_id: int | None = None
+
+
+@dataclass(frozen=True)
+class TheoryMark:
+    id: str
+    kind: TheoryMarkKind
+    index: int
+    time: str
+    price: float
+    label: str
+    reason: str
+    side: SignalSide | None = None
     center_id: int | None = None
     segment_id: int | None = None

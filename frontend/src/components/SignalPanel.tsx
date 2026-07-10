@@ -33,6 +33,7 @@ export function SignalPanel({ data, selectedSignalId, onSignalClick }: SignalPan
           <Metric label="中枢" value={data.summary.center_count} />
           <Metric label="背驰" value={data.summary.divergence_count} />
           <Metric label="信号" value={data.summary.signal_count} />
+          <Metric label="理论" value={data.summary.theory_mark_count} />
         </div>
       </section>
       <section>

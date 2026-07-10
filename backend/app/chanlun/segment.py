@@ -5,61 +5,72 @@ from dataclasses import replace
 from .models import Direction, Segment, Stroke
 
 
-REVERSE_GAP_PCT = 0.035
-
-
 def detect_segments(strokes: list[Stroke]) -> list[Segment]:
+    """Build continuous segments with one running state-machine record.
+
+    A segment begins with a valid consecutive three-stroke overlap.  The
+    scanner then advances stroke by stroke: only a later valid *opposite*
+    three-stroke unit confirms the running segment.  This matters when the
+    first possible reverse unit has no overlap; stepping by three would skip a
+    later valid reverse unit and incorrectly absorb it into the old segment.
+    """
     if len(strokes) < 3:
         return []
 
-    initial_start = _find_initial_segment_start(strokes)
-    if initial_start is None:
+    first_start = _find_first_overlap(strokes)
+    if first_start is None:
         return []
 
+    running = _segment_from_strokes(0, strokes, first_start, first_start + 2, "IS_RUNNING")
     segments: list[Segment] = []
-    running = _new_running_from_strokes(0, strokes, initial_start, initial_start + 2)
-    reverse_features: list[tuple[int, Stroke]] = []
+    last_consumed = first_start + 2
+    scan = first_start + 3
 
-    for stroke_index, stroke in enumerate(strokes[initial_start + 3 :], start=initial_start + 3):
-        if stroke.direction == running.direction:
-            extended = _extends_running_endpoint(running, stroke)
-            running = _extend_running_segment(running, stroke, stroke_index)
-            if extended:
-                reverse_features = []
+    while scan + 2 < len(strokes):
+        candidate = strokes[scan : scan + 3]
+        if _has_common_overlap(candidate) and candidate[0].direction != running.direction:
+            # Lock the old line at its directional extreme before the reverse
+            # unit. The next line will be anchored to this same endpoint.
+            if last_consumed + 1 < scan:
+                running = _extend_to_stroke(running, strokes[last_consumed + 1 : scan], scan - 1)
+            segments.append(replace(running, id=len(segments), status="CONFIRMED"))
+
+            running = _segment_from_strokes(len(segments), strokes, scan, scan + 2, "IS_RUNNING")
+            last_consumed = scan + 2
+            scan += 3
             continue
 
-        if _gap_breaks_running_segment(running, stroke):
-            confirmed, running = _cut_by_gap(running, stroke, stroke_index)
-            segments.append(confirmed)
-            reverse_features = []
-            continue
+        # No reversing unit yet: the single pending line keeps only its
+        # directional high/low as its visible endpoint.
+        if last_consumed < scan:
+            running = _extend_to_stroke(running, [strokes[scan]], scan)
+            last_consumed = scan
+        scan += 1
 
-        reverse_features.append((stroke_index, stroke))
-        if not _reverse_break_confirmed(running, reverse_features):
-            running = _update_running_shadow(running, stroke, stroke_index)
-            continue
-
-        confirmed = _confirm_running_at_extreme(running)
-        segments.append(confirmed)
-        running = _new_running_from_reverse_features(len(segments), confirmed, reverse_features)
-        reverse_features = []
+    if last_consumed + 1 < len(strokes):
+        running = _extend_to_stroke(running, strokes[last_consumed + 1 :], len(strokes) - 1)
 
     segments.append(replace(running, id=len(segments), status="IS_RUNNING"))
-    return _renumber(segments)
+    return _renumber_continuous(segments)
 
 
-def _find_initial_segment_start(strokes: list[Stroke]) -> int | None:
-    for index in range(0, len(strokes) - 2):
-        if _has_common_overlap(strokes[index : index + 3]):
-            return index
+def _find_first_overlap(strokes: list[Stroke]) -> int | None:
+    for start in range(len(strokes) - 2):
+        if _has_common_overlap(strokes[start : start + 3]):
+            return start
     return None
 
 
-def _new_running_from_strokes(segment_id: int, strokes: list[Stroke], start: int, end: int) -> Segment:
-    group = strokes[start : end + 1]
+def _segment_from_strokes(
+    segment_id: int,
+    strokes: list[Stroke],
+    start_stroke: int,
+    end_stroke: int,
+    status: str,
+) -> Segment:
+    group = strokes[start_stroke : end_stroke + 1]
     first = group[0]
-    direction = first.direction
-    end_index, end_time, end_price = _extreme_point(group, direction)
+    end_index, end_time, end_price = _directional_endpoint(group, first.direction)
     return Segment(
         id=segment_id,
         start_index=first.start_index,
@@ -68,201 +79,76 @@ def _new_running_from_strokes(segment_id: int, strokes: list[Stroke], start: int
         end_time=end_time,
         start_price=first.start_price,
         end_price=end_price,
-        direction=direction,
-        high=max(stroke.high for stroke in group),
-        low=min(stroke.low for stroke in group),
-        stroke_ids=list(range(start, end + 1)),
-        status="IS_RUNNING",
+        direction=first.direction,
+        high=max(first.start_price, end_price),
+        low=min(first.start_price, end_price),
+        stroke_ids=list(range(start_stroke, end_stroke + 1)),
+        status=status,  # type: ignore[arg-type]
     )
 
 
-def _new_running_segment(
-    segment_id: int,
-    start_index: int,
-    start_time: str,
-    start_price: float,
-    stroke: Stroke,
-    stroke_index: int,
-    direction: Direction | None = None,
-) -> Segment:
-    segment_direction = direction or stroke.direction
-    end_index, end_time, end_price = _stroke_extreme_point(stroke, segment_direction)
-    if segment_direction == "up" and end_price < start_price:
-        end_index, end_time, end_price = start_index, start_time, start_price
-    if segment_direction == "down" and end_price > start_price:
-        end_index, end_time, end_price = start_index, start_time, start_price
-    return Segment(
-        id=segment_id,
-        start_index=start_index,
+def _extend_to_stroke(segment: Segment, extra_strokes: list[Stroke], end_stroke_id: int) -> Segment:
+    if not extra_strokes:
+        return segment
+    end_index, end_time, end_price = _directional_endpoint(extra_strokes, segment.direction, segment)
+    return replace(
+        segment,
         end_index=end_index,
-        start_time=start_time,
         end_time=end_time,
-        start_price=start_price,
         end_price=end_price,
-        direction=segment_direction,
-        high=max(start_price, stroke.high, end_price),
-        low=min(start_price, stroke.low, end_price),
-        stroke_ids=[stroke_index],
+        high=max(segment.start_price, end_price),
+        low=min(segment.start_price, end_price),
+        stroke_ids=[*segment.stroke_ids, *range(end_stroke_id - len(extra_strokes) + 1, end_stroke_id + 1)],
         status="IS_RUNNING",
     )
 
 
-def _extend_running_segment(segment: Segment, stroke: Stroke, stroke_index: int) -> Segment:
-    extreme_index, extreme_time, extreme_price = _stroke_extreme_point(stroke, segment.direction)
-    if segment.direction == "up":
-        should_extend = extreme_price >= segment.end_price
+def _directional_endpoint(
+    strokes: list[Stroke], direction: Direction, previous: Segment | None = None
+) -> tuple[int, str, float]:
+    if previous is not None:
+        best_index, best_time, best_price = previous.end_index, previous.end_time, previous.end_price
     else:
-        should_extend = extreme_price <= segment.end_price
-    return replace(
-        segment,
-        end_index=extreme_index if should_extend else segment.end_index,
-        end_time=extreme_time if should_extend else segment.end_time,
-        end_price=extreme_price if should_extend else segment.end_price,
-        high=max(segment.high, extreme_price),
-        low=min(segment.low, extreme_price),
-        stroke_ids=[*segment.stroke_ids, stroke_index],
-        status="IS_RUNNING",
-    )
+        best_index, best_time, best_price = _stroke_extreme_point(strokes[0], direction)
+
+    for stroke in strokes:
+        index, time, price = _stroke_extreme_point(stroke, direction)
+        if (direction == "up" and price > best_price) or (direction == "down" and price < best_price):
+            best_index, best_time, best_price = index, time, price
+    return best_index, best_time, best_price
 
 
-def _update_running_shadow(segment: Segment, stroke: Stroke, stroke_index: int) -> Segment:
-    return replace(
-        segment,
-        stroke_ids=[*segment.stroke_ids, stroke_index],
-        status="IS_RUNNING",
-    )
+def _stroke_extreme_point(stroke: Stroke, direction: Direction) -> tuple[int, str, float]:
+    if direction == "up":
+        if stroke.direction == "up":
+            return stroke.end_index, stroke.end_time, stroke.high
+        return stroke.start_index, stroke.start_time, stroke.high
+    if stroke.direction == "down":
+        return stroke.end_index, stroke.end_time, stroke.low
+    return stroke.start_index, stroke.start_time, stroke.low
 
 
-def _reverse_break_confirmed(running: Segment, reverse_features: list[tuple[int, Stroke]]) -> bool:
-    if len(reverse_features) < 3:
+def _has_common_overlap(strokes: list[Stroke]) -> bool:
+    if len(strokes) != 3:
         return False
-    last_three = [stroke for _, stroke in reverse_features[-3:]]
-    if not _has_common_overlap(last_three):
-        return False
-    _, current = reverse_features[-1]
-    return _breaks_running_endpoint(running, current)
+    zg = min(stroke.high for stroke in strokes)
+    zd = max(stroke.low for stroke in strokes)
+    return zg > zd
 
 
-def _confirm_running_at_extreme(segment: Segment) -> Segment:
-    return replace(segment, status="CONFIRMED")
-
-
-def _gap_breaks_running_segment(segment: Segment, stroke: Stroke) -> bool:
-    base = max(abs(segment.end_price), 0.01)
-    gap = abs(stroke.start_price - segment.end_price) / base
-    if gap < REVERSE_GAP_PCT:
-        return False
-    if segment.direction == "up":
-        return stroke.direction == "down" and stroke.start_price < segment.end_price
-    return stroke.direction == "up" and stroke.start_price > segment.end_price
-
-
-def _cut_by_gap(segment: Segment, stroke: Stroke, stroke_index: int) -> tuple[Segment, Segment]:
-    confirmed = replace(
-        segment,
-        end_index=stroke.start_index,
-        end_time=stroke.start_time,
-        end_price=stroke.start_price,
-        high=max(segment.high, stroke.start_price),
-        low=min(segment.low, stroke.start_price),
-        status="CONFIRMED",
-    )
-    running = _new_running_segment(
-        segment.id + 1,
-        stroke.start_index,
-        stroke.start_time,
-        stroke.start_price,
-        stroke,
-        stroke_index,
-        direction=stroke.direction,
-    )
-    return confirmed, running
-
-
-def _opposite(direction: Direction) -> Direction:
-    return "down" if direction == "up" else "up"
-
-
-def _renumber(segments: list[Segment]) -> list[Segment]:
-    normalized: list[Segment] = []
-    for index, segment in enumerate(segments):
-        current = replace(segment, id=index)
-        if normalized:
-            previous = normalized[-1]
+def _renumber_continuous(segments: list[Segment]) -> list[Segment]:
+    result: list[Segment] = []
+    for segment_id, segment in enumerate(segments):
+        current = replace(segment, id=segment_id)
+        if result:
+            previous = result[-1]
             current = replace(
                 current,
                 start_index=previous.end_index,
                 start_time=previous.end_time,
                 start_price=previous.end_price,
-                high=max(current.high, previous.end_price),
-                low=min(current.low, previous.end_price),
+                high=max(previous.end_price, current.end_price),
+                low=min(previous.end_price, current.end_price),
             )
-        normalized.append(current)
-    return normalized
-
-
-def _new_running_from_reverse_features(
-    segment_id: int,
-    confirmed: Segment,
-    reverse_features: list[tuple[int, Stroke]],
-) -> Segment:
-    direction = _opposite(confirmed.direction)
-    stroke_ids = [stroke_index for stroke_index, _ in reverse_features]
-    strokes = [stroke for _, stroke in reverse_features]
-    end_index, end_time, end_price = _extreme_point(strokes, direction)
-    return Segment(
-        id=segment_id,
-        start_index=confirmed.end_index,
-        end_index=end_index,
-        start_time=confirmed.end_time,
-        end_time=end_time,
-        start_price=confirmed.end_price,
-        end_price=end_price,
-        direction=direction,
-        high=max([confirmed.end_price, *[stroke.high for stroke in strokes]]),
-        low=min([confirmed.end_price, *[stroke.low for stroke in strokes]]),
-        stroke_ids=stroke_ids,
-        status="IS_RUNNING",
-    )
-
-
-def _extends_running_endpoint(segment: Segment, stroke: Stroke) -> bool:
-    _, _, extreme_price = _stroke_extreme_point(stroke, segment.direction)
-    if segment.direction == "up":
-        return extreme_price > segment.end_price
-    return extreme_price < segment.end_price
-
-
-def _breaks_running_endpoint(segment: Segment, stroke: Stroke) -> bool:
-    _, _, extreme_price = _stroke_extreme_point(stroke, _opposite(segment.direction))
-    if segment.direction == "up":
-        return extreme_price < segment.end_price
-    return extreme_price > segment.end_price
-
-
-def _has_common_overlap(strokes: list[Stroke]) -> bool:
-    if len(strokes) < 3:
-        return False
-    zg = min(stroke.high for stroke in strokes)
-    zd = max(stroke.low for stroke in strokes)
-    return zg >= zd
-
-
-def _extreme_point(strokes: list[Stroke], direction: Direction) -> tuple[int, str, float]:
-    points: list[tuple[int, str, float]] = []
-    for stroke in strokes:
-        points.append((stroke.start_index, stroke.start_time, stroke.start_price))
-        points.append((stroke.end_index, stroke.end_time, stroke.end_price))
-    if direction == "up":
-        return max(points, key=lambda item: (item[2], item[0]))
-    return min(points, key=lambda item: (item[2], -item[0]))
-
-
-def _stroke_extreme_point(stroke: Stroke, direction: Direction) -> tuple[int, str, float]:
-    if direction == "up":
-        if stroke.start_price >= stroke.end_price:
-            return stroke.start_index, stroke.start_time, stroke.start_price
-        return stroke.end_index, stroke.end_time, stroke.end_price
-    if stroke.start_price <= stroke.end_price:
-        return stroke.start_index, stroke.start_time, stroke.start_price
-    return stroke.end_index, stroke.end_time, stroke.end_price
+        result.append(current)
+    return result

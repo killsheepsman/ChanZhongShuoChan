@@ -1,6 +1,6 @@
 import { createChart, IChartApi, ISeriesApi, LineStyle, UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AnalysisResponse, Center, KLine, Segment, Signal, Stroke } from "../types";
+import type { AnalysisResponse, Center, KLine, Segment, Signal, Stroke, TheoryMark } from "../types";
 
 interface ChartPanelProps {
   data: AnalysisResponse | null;
@@ -11,6 +11,8 @@ interface ChartPanelProps {
     strokes: boolean;
     segments: boolean;
     centers: boolean;
+    divergences: boolean;
+    theory: boolean;
     signals: boolean;
   };
 }
@@ -137,7 +139,7 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
         } as const);
       }
     }
-    if (layers.signals) {
+    if (layers.divergences) {
       const segmentById = new Map(data.segments.map((segment) => [segment.id, segment]));
       for (const divergence of data.divergences) {
         const segment = segmentById.get(divergence.segment_id);
@@ -150,6 +152,19 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
           text: divergence.kind === "trend" ? "背" : "盘背",
         } as const);
       }
+    }
+    if (layers.theory) {
+      for (const mark of data.theory_marks ?? []) {
+        markers.push({
+          time: toTimestamp(mark.time),
+          position: markerPosition(mark),
+          color: theoryMarkColor(mark),
+          shape: theoryMarkShape(mark),
+          text: mark.label,
+        } as const);
+      }
+    }
+    if (layers.signals) {
       for (const signal of data.signals) {
         const isCandidate = signal.status === "candidate";
         const isInvalidated = signal.status === "invalidated";
@@ -276,6 +291,31 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
       ]);
       overlayRefs.current.push(series);
     }
+  }
+
+  function markerPosition(mark: TheoryMark) {
+    if (mark.side === "buy") return "belowBar" as const;
+    if (mark.side === "sell") return "aboveBar" as const;
+    if (mark.kind === "center_formed" || mark.kind === "center_extend") return "inBar" as const;
+    return "aboveBar" as const;
+  }
+
+  function theoryMarkColor(mark: TheoryMark) {
+    const colors: Record<TheoryMark["kind"], string> = {
+      segment_break: "#f97316",
+      center_formed: "#14b8a6",
+      center_extend: "#2dd4bf",
+      center_leave: mark.side === "buy" ? "#22c55e" : "#ef4444",
+      center_retest: mark.side === "buy" ? "#16a34a" : "#dc2626",
+      trend_state: mark.side === "buy" ? "#38bdf8" : mark.side === "sell" ? "#fb7185" : "#94a3b8",
+      macd_zero: mark.side === "buy" ? "#a3e635" : "#f472b6",
+    };
+    return colors[mark.kind];
+  }
+
+  function theoryMarkShape(mark: TheoryMark) {
+    if (mark.kind === "center_formed" || mark.kind === "center_extend" || mark.kind === "trend_state") return "circle" as const;
+    return mark.side === "buy" ? "arrowUp" as const : "arrowDown" as const;
   }
 
   function fitFullRange() {
