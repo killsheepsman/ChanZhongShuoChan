@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Callable
 
 import pandas as pd
@@ -17,6 +17,8 @@ class KLineFetchResult:
     source: str
     ok: bool
     message: str
+    source_first_kline_time: str | None = None
+    source_last_kline_time: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,16 +144,31 @@ def fetch_akshare_klines(
     errors: list[str] = []
     for source, label, loader in attempts:
         try:
-            klines = klines_from_frame(loader())
-            if not klines:
+            source_klines = klines_from_frame(loader())
+            if not source_klines:
                 errors.append(f"{label}: 返回空数据")
                 continue
-            return KLineFetchResult(klines, source, True, f"{label} 数据刷新成功")
+            klines = filter_klines_to_range(source_klines, start_date, end_date)
+            if not klines:
+                errors.append(f"{label}: 返回数据与请求区间没有重叠")
+                continue
+
+            source_first = source_klines[0].time
+            source_last = source_klines[-1].time
+            return KLineFetchResult(
+                klines,
+                source,
+                True,
+                _fetch_message(label, source_first, source_last, start_date, end_date),
+                source_first,
+                source_last,
+            )
         except Exception as exc:
             errors.append(f"{label}: {exc}")
 
     sample_message = "；".join(errors) if errors else "所有数据源均未返回数据"
-    return KLineFetchResult(_sample_klines(), "sample", False, f"真实数据源全部失败，已使用示例数据：{sample_message}")
+    sample_klines = filter_klines_to_range(_sample_klines(), start_date, end_date)
+    return KLineFetchResult(sample_klines, "sample", False, f"真实数据源全部失败，已使用示例数据：{sample_message}")
 
 
 def _code_name_columns(frame: pd.DataFrame) -> tuple[str, str]:
@@ -191,6 +208,71 @@ def _format_min_date(value: str, end: bool = False) -> str:
         return "1900-01-01 00:00:00"
     suffix = "23:59:59" if end else "00:00:00"
     return f"{value[:4]}-{value[4:6]}-{value[6:8]} {suffix}"
+
+
+def filter_klines_to_range(klines: list[KLine], start_date: str, end_date: str) -> list[KLine]:
+    """Return valid source K-lines within the inclusive user-requested calendar range."""
+    start, end = _request_boundaries(start_date, end_date)
+    selected: list[tuple[datetime, KLine]] = []
+    for kline in klines:
+        timestamp = _parse_kline_time(kline.time)
+        if timestamp is not None and start <= timestamp <= end:
+            selected.append((timestamp, kline))
+
+    selected.sort(key=lambda item: item[0])
+    return [
+        KLine(
+            index=index,
+            time=kline.time,
+            open=kline.open,
+            high=kline.high,
+            low=kline.low,
+            close=kline.close,
+            volume=kline.volume,
+            amount=kline.amount,
+        )
+        for index, (_, kline) in enumerate(selected)
+    ]
+
+
+def _request_boundaries(start_date: str, end_date: str) -> tuple[datetime, datetime]:
+    start = _parse_request_date(start_date)
+    end = _parse_request_date(end_date)
+    if end < start:
+        raise ValueError("end_date must not be earlier than start_date")
+    return (
+        datetime.combine(start, datetime.min.time()),
+        datetime.combine(end, datetime.max.time()),
+    )
+
+
+def _parse_request_date(value: str) -> date:
+    normalized = str(value).strip().replace("-", "")
+    if len(normalized) != 8 or not normalized.isdigit():
+        raise ValueError("date must use YYYYMMDD or YYYY-MM-DD")
+    return datetime.strptime(normalized, "%Y%m%d").date()
+
+
+def _parse_kline_time(value: str) -> datetime | None:
+    try:
+        timestamp = pd.to_datetime(value, errors="coerce")
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(timestamp):
+        return None
+    return timestamp.to_pydatetime().replace(tzinfo=None)
+
+
+def _fetch_message(label: str, source_first: str, source_last: str, start_date: str, end_date: str) -> str:
+    requested_start, requested_end = _request_boundaries(start_date, end_date)
+    first = _parse_kline_time(source_first)
+    last = _parse_kline_time(source_last)
+    if first is not None and last is not None and (first > requested_start or last < requested_end):
+        return (
+            f"{label} 数据刷新成功；数据源仅返回 {source_first} 至 {source_last}，"
+            "未覆盖完整请求区间，图表仅显示数据源实际提供的K线。"
+        )
+    return f"{label} 数据刷新成功；已严格按请求区间裁剪图表K线。"
 
 
 def _sample_klines(days: int = 220) -> list[KLine]:

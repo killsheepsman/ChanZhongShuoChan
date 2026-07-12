@@ -47,13 +47,20 @@ def _dedupe_alternating(fractals: list[Fractal], min_gap: int) -> list[Fractal]:
                 result[-1] = fractal
             continue
 
-        if fractal.index - last.index > min_gap:
+        if _has_independent_gap(last, fractal, min_gap):
             result.append(fractal)
 
         # An opposite fractal inside the minimum distance is ignored. It must
         # never replace ``last`` because that violates the alternation rule.
     return result
 
+
+
+def _has_independent_gap(left: Fractal, right: Fractal, min_gap: int) -> bool:
+    """Keep the two three-K-line fractal windows disjoint with an inner gap."""
+    # A center at i occupies [i - 1, i, i + 1]. The next center must be at
+    # least min_gap + 3 away to avoid sharing a bar and retain min_gap bars.
+    return right.index - left.index >= min_gap + 3
 
 def _more_extreme(candidate: Fractal, reference: Fractal) -> bool:
     if candidate.kind == "top":

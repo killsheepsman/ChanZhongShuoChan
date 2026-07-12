@@ -21,7 +21,13 @@ from app.services.signal_store import (
     query_signal_matches,
     upsert_stock_signals,
 )
-from app.services.stock_data import StockInfo, fetch_akshare_klines, fetch_stock_list, fetch_stock_name
+from app.services.stock_data import (
+    StockInfo,
+    fetch_akshare_klines,
+    fetch_stock_list,
+    fetch_stock_name,
+    filter_klines_to_range,
+)
 
 
 app = FastAPI(title="Chanlun Stock Analyzer", version="0.1.0")
@@ -46,6 +52,11 @@ _STOCK_CACHE: list[StockInfo] | None = None
 _STOCK_CACHE_LOCK = threading.Lock()
 _SCAN_JOBS: dict[str, dict] = {}
 _SCAN_JOBS_LOCK = threading.Lock()
+
+ANALYSIS_ENGINE = {
+    "segment_engine": "state-machine-v2",
+    "rule_profile": "三笔共同重叠成段；反向完整线段突破守卫后确认",
+}
 
 
 @app.on_event("startup")
@@ -85,6 +96,7 @@ def analyze_stock(
         "end_date": end_date,
         "adjust": adjust,
     }
+    analysis["engine"] = ANALYSIS_ENGINE
     analysis["data_status"] = {
         "ok": fetch_result.ok,
         "source": fetch_result.source,
@@ -92,6 +104,8 @@ def analyze_stock(
         "refreshed_at": _now(),
         "first_kline_time": first_kline,
         "last_kline_time": last_kline,
+        "source_first_kline_time": fetch_result.source_first_kline_time,
+        "source_last_kline_time": fetch_result.source_last_kline_time,
         "kline_count": len(fetch_result.klines),
     }
     return analysis
@@ -302,12 +316,11 @@ def _fetch_scan_klines(symbol: str, period: str, start_date: str, end_date: str,
                 adjust=adjust,
                 timeout=10,
             )
-            return klines_from_frame(frame), "akshare-tencent-daily"
+            return filter_klines_to_range(klines_from_frame(frame), start_date, end_date), "akshare-tencent-daily"
 
         if period in {"1", "5", "15", "30", "60"}:
             frame = ak.stock_zh_a_hist_min_em(symbol=symbol, period=period, adjust=adjust)
-            frame = _filter_minute_frame(frame, start_date, end_date)
-            return klines_from_frame(frame), "akshare-eastmoney-minute"
+            return filter_klines_to_range(klines_from_frame(frame), start_date, end_date), "akshare-eastmoney-minute"
     except Exception:
         return [], ""
 

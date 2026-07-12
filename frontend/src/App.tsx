@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartPanel } from "./components/ChartPanel";
 import { ControlBar } from "./components/ControlBar";
+import { DataStatusFooter } from "./components/DataStatusFooter";
 import { LayerToggles } from "./components/LayerToggles";
 import { SignalPanel } from "./components/SignalPanel";
 import { SignalScanner } from "./components/SignalScanner";
@@ -138,7 +139,7 @@ export function App() {
   );
 
   function exportKlineCsv() {
-    if (!data?.klines.length) return;
+    if (!data?.raw_klines.length) return;
     const symbol = data.request.symbol;
     const stockName = data.request.symbol_name || stockNameInput || "";
     const startDate = data.request.start_date || params.startDate;
@@ -146,7 +147,7 @@ export function App() {
     const fileName = `${sanitizeFileName(symbol)}${sanitizeFileName(stockName)}${startDate}${endDate}.csv`;
     const rows = [
       ["日期", "股票代码", "股票名称", "高", "低", "开", "收"],
-      ...data.klines.map((kline) => [
+      ...data.raw_klines.map((kline) => [
         kline.time,
         symbol,
         stockName,
@@ -277,6 +278,7 @@ export function App() {
         </div>
         <SignalPanel data={data} selectedSignalId={focusedSignal?.id ?? null} onSignalClick={setFocusedSignal} />
       </section>
+      <DataStatusFooter data={data} error={error} loading={loading} />
     </main>
   );
 }

@@ -179,12 +179,13 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
     }
     if (layers.segments) {
       for (const segment of data.segments) {
+        const isRunning = segment.status === "IS_RUNNING";
         markers.push({
           time: toTimestamp(segment.end_time),
           position: segment.direction === "up" ? "aboveBar" : "belowBar",
-          color: "#f59e0b",
+          color: isRunning ? "#38bdf8" : "#f59e0b",
           shape: "circle",
-          text: `线${segment.id + 1}`,
+          text: `线${segment.id + 1} ${isRunning ? "运行" : "确认"}`,
         } as const);
       }
     }

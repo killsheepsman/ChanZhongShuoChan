@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -56,6 +56,24 @@ class Stroke:
 
 
 @dataclass(frozen=True)
+class SegmentEvidence:
+    """Why a segment exists, is still running, or was confirmed as broken."""
+
+    formation_stroke_ids: list[int] = field(default_factory=list)
+    formation_zd: float | None = None
+    formation_zg: float | None = None
+    candidate_stroke_ids: list[int] = field(default_factory=list)
+    candidate_zd: float | None = None
+    candidate_zg: float | None = None
+    guard_side: Literal["high", "low"] | None = None
+    guard_price: float | None = None
+    candidate_extreme: float | None = None
+    break_stroke_id: int | None = None
+    break_time: str | None = None
+    break_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class Segment:
     id: int
     start_index: int
@@ -69,6 +87,7 @@ class Segment:
     low: float
     stroke_ids: list[int]
     status: SegmentStatus = "CONFIRMED"
+    evidence: SegmentEvidence | None = None
 
 
 @dataclass(frozen=True)

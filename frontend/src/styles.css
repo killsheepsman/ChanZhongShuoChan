@@ -529,3 +529,65 @@ select {
 .data-status-footer.warning .data-status-summary strong { color: #fde68a; }
 .data-status-detail { color: #e2e8f0; overflow-wrap: anywhere; }
 .data-status-causes { color: #94a3b8; overflow-wrap: anywhere; }
+
+.data-range-section,
+.segment-evidence-section {
+  border-top: 1px solid #273449;
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+.data-range-list,
+.segment-evidence-list {
+  display: grid;
+  gap: 7px;
+}
+
+.data-range-list span {
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.segment-evidence-card {
+  border: 1px solid #334155;
+  border-left: 3px solid #f59e0b;
+  border-radius: 6px;
+  padding: 9px;
+  background: #0f172a;
+}
+
+.segment-evidence-card.running {
+  border-left-color: #38bdf8;
+}
+
+.segment-evidence-card.confirmed {
+  border-left-color: #f59e0b;
+}
+
+.segment-evidence-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #f8fafc;
+  font-size: 13px;
+}
+
+.segment-evidence-card header span {
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.segment-evidence-card p {
+  margin: 6px 0 0;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.segment-evidence-card .break-evidence {
+  color: #fde68a;
+}

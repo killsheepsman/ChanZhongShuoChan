@@ -69,25 +69,7 @@ function Start-ServiceProcess {
     [string]$ErrLog
   )
   Write-Host "$Title starting in background..." -ForegroundColor Green
-
-  # ProcessStartInfo avoids a PowerShell Start-Process failure when the desktop`n  # shell exposes both Path and PATH in the inherited environment.
-  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $FilePath
-  $startInfo.WorkingDirectory = $WorkingDirectory
-  $startInfo.UseShellExecute = $false
-  $startInfo.CreateNoWindow = $true
-  $startInfo.RedirectStandardOutput = $false
-  $startInfo.RedirectStandardError = $false
-  $startInfo.Arguments = (($ArgumentList | ForEach-Object {
-    '"' + ([string]$_).Replace('"', '\"') + '"'
-  }) -join ' ')
-
-  $process = [System.Diagnostics.Process]::new()
-  $process.StartInfo = $startInfo
-  if (-not $process.Start()) {
-    throw "Unable to start $Title."
-  }
-  return $process
+  return Start-Process     -FilePath $FilePath     -ArgumentList $ArgumentList     -WorkingDirectory $WorkingDirectory     -WindowStyle Hidden     -PassThru
 }
 
 function Find-Browser {
@@ -137,7 +119,7 @@ if (Test-PortListening 8000) {
     -Title "Backend" `
     -WorkingDirectory $BackendDir `
     -FilePath $Python `
-    -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000") `
+    -ArgumentList @("-B", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000") `
     -OutLog (Join-Path $LogDir "backend.out.log") `
     -ErrLog (Join-Path $LogDir "backend.err.log") | Out-Null
 }

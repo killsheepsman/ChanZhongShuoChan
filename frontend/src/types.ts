@@ -67,9 +67,25 @@ export interface Stroke {
   low: number;
 }
 
+export interface SegmentEvidence {
+  formation_stroke_ids: number[];
+  formation_zd: number | null;
+  formation_zg: number | null;
+  candidate_stroke_ids: number[];
+  candidate_zd: number | null;
+  candidate_zg: number | null;
+  guard_side: "high" | "low" | null;
+  guard_price: number | null;
+  candidate_extreme: number | null;
+  break_stroke_id: number | null;
+  break_time: string | null;
+  break_reason: string | null;
+}
+
 export interface Segment extends Stroke {
   id: number;
   status: "IS_RUNNING" | "CONFIRMED";
+  evidence: SegmentEvidence | null;
 }
 
 export interface Center {
@@ -142,9 +158,16 @@ export interface AnalysisResponse {
     refreshed_at: string;
     first_kline_time: string | null;
     last_kline_time: string | null;
+    source_first_kline_time?: string | null;
+    source_last_kline_time?: string | null;
     kline_count: number;
   };
+  engine?: {
+    segment_engine: string;
+    rule_profile: string;
+  };
   klines: KLine[];
+  raw_klines: KLine[];
   fractals: Fractal[];
   strokes: Stroke[];
   segments: Segment[];

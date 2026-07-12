@@ -19,7 +19,6 @@ def analyze_klines(klines: list[KLine]) -> dict:
     processed = process_inclusion(klines)
     fractals = detect_fractals(processed)
     strokes = detect_strokes(fractals)
-    strokes = _append_pending_stroke(strokes, processed)
     segments = detect_segments(strokes)
     confirmed_segments = [segment for segment in segments if segment.status == "CONFIRMED"]
     centers = detect_centers(confirmed_segments)
@@ -30,6 +29,7 @@ def analyze_klines(klines: list[KLine]) -> dict:
     trend = classify_trend(centers)
 
     return {
+        "raw_klines": [asdict(item) for item in klines],
         "klines": [asdict(item) for item in processed],
         "fractals": [asdict(item) for item in fractals],
         "strokes": [asdict(item) for item in strokes],

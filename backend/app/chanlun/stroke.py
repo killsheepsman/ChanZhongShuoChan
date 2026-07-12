@@ -5,7 +5,7 @@ from .models import Fractal, Stroke
 
 def detect_strokes(
     fractals: list[Fractal],
-    min_kline_count: int = 3,
+    min_kline_count: int = 4,
     min_amplitude_pct: float = 0.003,
 ) -> list[Stroke]:
     """Build a continuous stroke chain from confirmed alternating fractals.
@@ -59,6 +59,7 @@ def _more_extreme(left: Fractal, right: Fractal) -> Fractal:
 
 
 def _is_valid_distance(left: Fractal, right: Fractal, min_kline_count: int) -> bool:
+    # An index distance of four means five processed K-lines including endpoints.
     return abs(right.index - left.index) >= min_kline_count
 
 
