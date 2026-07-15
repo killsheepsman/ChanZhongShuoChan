@@ -6,9 +6,12 @@ from typing import Literal
 
 Direction = Literal["up", "down"]
 FractalKind = Literal["top", "bottom"]
+StrokeStatus = Literal["CONFIRMED", "PENDING"]
 SignalSide = Literal["buy", "sell"]
-SignalStatus = Literal["candidate", "confirmed", "invalidated"]
+SignalStatus = Literal["candidate", "confirmed", "invalidated", "expired"]
 SegmentStatus = Literal["IS_RUNNING", "CONFIRMED"]
+CenterDirection = Literal["NONE", "UP", "DOWN", "SIDEWAYS"]
+CenterStatus = Literal["RUNNING", "ENDED"]
 TheoryMarkKind = Literal[
     "segment_break",
     "center_formed",
@@ -30,6 +33,10 @@ class KLine:
     close: float
     volume: float = 0.0
     amount: float = 0.0
+    source_start_time: str | None = None
+    source_end_time: str | None = None
+    high_time: str | None = None
+    low_time: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,7 @@ class Stroke:
     high: float
     low: float
 
+    status: StrokeStatus = "CONFIRMED"
 
 @dataclass(frozen=True)
 class SegmentEvidence:
@@ -65,6 +73,8 @@ class SegmentEvidence:
     candidate_stroke_ids: list[int] = field(default_factory=list)
     candidate_zd: float | None = None
     candidate_zg: float | None = None
+    characteristic_stroke_ids: list[int] = field(default_factory=list)
+    characteristic_pattern: str | None = None
     guard_side: Literal["high", "low"] | None = None
     guard_price: float | None = None
     candidate_extreme: float | None = None
@@ -102,6 +112,21 @@ class Center:
     gg: float
     dd: float
     segment_ids: list[int]
+    direction: CenterDirection = "NONE"
+    extend_count: int = 0
+    status: CenterStatus = "ENDED"
+    break_segment_id: int | None = None
+
+
+@dataclass(frozen=True)
+class CenterExpansion:
+    id: str
+    center_ids: list[int]
+    overlap_low: float
+    overlap_high: float
+    gg: float
+    dd: float
+    status: Literal["EXPANSION_CANDIDATE"] = "EXPANSION_CANDIDATE"
 
 
 @dataclass(frozen=True)
@@ -126,6 +151,11 @@ class BuySellSignal:
     reason: str
     center_id: int | None = None
     segment_id: int | None = None
+    divergence_ratio: float | None = None
+    enter_segment_id: int | None = None
+    leave_segment_id: int | None = None
+    strength: int = 0
+    level: str = "current"
 
 
 @dataclass(frozen=True)

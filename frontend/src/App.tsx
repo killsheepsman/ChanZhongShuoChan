@@ -1,16 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartPanel } from "./components/ChartPanel";
 import { ControlBar } from "./components/ControlBar";
-import { DataStatusFooter } from "./components/DataStatusFooter";
 import { LayerToggles } from "./components/LayerToggles";
 import { SignalPanel } from "./components/SignalPanel";
 import { SignalScanner } from "./components/SignalScanner";
-import { AnalyzeParams, fetchAnalysis, fetchSignalScanStatus, fetchStocks, startSignalScan } from "./lib/api";
-import type { AnalysisResponse, Signal, SignalScanMatch, StockOption } from "./types";
+import { Tdx2DbPanel } from "./components/Tdx2DbPanel";
+import {
+  AnalyzeParams,
+  fetchAnalysis,
+  configureTdx2Db,  fetchSignalScanStatus,
+  fetchStocks,
+  fetchTdx2DbStatus,  startSignalScan,
+  startTdx2DbSync,
+  startTdx2DbHistoryBackfill,
+  stopTdx2DbSync,
+} from "./lib/api";
+import type { AnalysisResponse, Signal, SignalScanMatch, StockOption, Tdx2DbStatus } from "./types";
 
 const today = new Date();
-const start = new Date(today.getTime() - 380 * 24 * 60 * 60 * 1000);
+// Use the earliest requested 603703 five-minute history by default.
+const start = new Date("2024-08-12T00:00:00");
 const FALLBACK_STOCKS: StockOption[] = [
+  { code: "603703", name: "盛洋科技" },
   { code: "000001", name: "平安银行" },
   { code: "000002", name: "万科A" },
   { code: "600000", name: "浦发银行" },
@@ -19,14 +30,15 @@ const FALLBACK_STOCKS: StockOption[] = [
 
 export function App() {
   const [params, setParams] = useState<AnalyzeParams>({
-    symbol: "000001",
-    period: "daily",
+    symbol: "603703",
+    period: "5",
     startDate: formatDate(start),
     endDate: formatDate(today),
     adjust: "qfq",
+    allowExternal: window.localStorage.getItem("chanlun.allowExternal") === "true",
   });
   const [stocks, setStocks] = useState<StockOption[]>(FALLBACK_STOCKS);
-  const [stockNameInput, setStockNameInput] = useState("平安银行");
+  const [stockNameInput, setStockNameInput] = useState("盛洋科技");
   const [layers, setLayers] = useState({
     fractals: true,
     strokes: true,
@@ -44,16 +56,20 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [scanParams, setScanParams] = useState({
-    signalDate: formatInputDate(today),
-    period: "daily",
+    startSignalDate: formatInputDate(today),
+    endSignalDate: formatInputDate(today),
+    period: "5",
     side: "buy" as "buy" | "sell",
     type: 1 as 1 | 2 | 3,
   });
   const [scanMatches, setScanMatches] = useState<SignalScanMatch[]>([]);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0, percent: 0, matched: 0 });
-  const [selectedScanCode, setSelectedScanCode] = useState("");
-
+  const [selectedScanMatchKey, setSelectedScanMatchKey] = useState("");
+  const [tdx2dbVisible, setTdx2dbVisible] = useState(false);
+  const [tdx2dbStatus, setTdx2dbStatus] = useState<Tdx2DbStatus | null>(null);
+  const [tdx2dbLoading, setTdx2dbLoading] = useState(false);
+  const [tdx2dbError, setTdx2dbError] = useState<string | null>(null);
   const layerState = useMemo(() => layers, [layers]);
 
   const runAnalysis = useCallback(
@@ -90,7 +106,7 @@ export function App() {
     setScanMessage("正在查询数据库并补充后台索引...");
     setScanProgress({ scanned: 0, total: 0, percent: 0, matched: 0 });
     setScanMatches([]);
-    setSelectedScanCode("");
+    setSelectedScanMatchKey("");
     try {
       let status = await startSignalScan({
         ...scanParams,
@@ -116,9 +132,58 @@ export function App() {
     }
   }
 
+  async function saveTdx2DbPath(tdxPath: string) {
+    setTdx2dbLoading(true);
+    setTdx2dbError(null);
+    try {
+      setTdx2dbStatus(await configureTdx2Db(tdxPath));
+      void fetchStocks().then((items) => items.length && setStocks(items));
+    } catch (err) {
+      setTdx2dbError(err instanceof Error ? err.message : "保存通达信目录失败");
+    } finally {
+      setTdx2dbLoading(false);
+    }
+  }
+
+  async function startTdxSync() {
+    setTdx2dbLoading(true);
+    setTdx2dbError(null);
+    try {
+      setTdx2dbStatus(await startTdx2DbSync());
+    } catch (err) {
+      setTdx2dbError(err instanceof Error ? err.message : "启动通达信同步失败");
+    } finally {
+      setTdx2dbLoading(false);
+    }
+  }
+
+  async function startTdxHistoryBackfill() {
+    setTdx2dbLoading(true);
+    setTdx2dbError(null);
+    try {
+      setTdx2dbStatus(await startTdx2DbHistoryBackfill());
+    } catch (err) {
+      setTdx2dbError(err instanceof Error ? err.message : "导入通达信5分钟历史失败");
+    } finally {
+      setTdx2dbLoading(false);
+    }
+  }
+
+  async function stopTdxSync() {
+    setTdx2dbLoading(true);
+    setTdx2dbError(null);
+    try {
+      setTdx2dbStatus(await stopTdx2DbSync());
+    } catch (err) {
+      setTdx2dbError(err instanceof Error ? err.message : "停止通达信同步失败");
+    } finally {
+      setTdx2dbLoading(false);
+    }
+  }
+
   function selectScanMatch(match: SignalScanMatch) {
     const nextParams = { ...params, symbol: match.code, period: scanParams.period };
-    setSelectedScanCode(match.code);
+    setSelectedScanMatchKey(`${match.code}|${match.time}`);
     setParams(nextParams);
     setStockNameInput(match.name);
     void runAnalysis(nextParams);
@@ -170,6 +235,39 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!tdx2dbVisible) return;
+    let cancelled = false;
+    void fetchTdx2DbStatus()
+      .then((status) => {
+        if (!cancelled) setTdx2dbStatus(status);
+      })
+      .catch((err) => {
+        if (!cancelled) setTdx2dbError(err instanceof Error ? err.message : "读取通达信本地库状态失败");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tdx2dbVisible]);
+
+  useEffect(() => {
+    window.localStorage.setItem("chanlun.allowExternal", String(params.allowExternal));
+  }, [params.allowExternal]);
+
+  const tdxSyncActive =
+    tdx2dbStatus?.sync.status === "running" ||
+    tdx2dbStatus?.sync.status === "stopping";
+
+  useEffect(() => {
+    if (!tdx2dbVisible || !tdxSyncActive) return;
+    const timer = window.setInterval(() => {
+      void fetchTdx2DbStatus()
+        .then(setTdx2dbStatus)
+        .catch((err) => setTdx2dbError(err instanceof Error ? err.message : "刷新通达信同步状态失败"));
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [tdx2dbVisible, tdxSyncActive]);
+
+  useEffect(() => {
     void fetchStocks()
       .then((items) => {
         if (!items.length) return;
@@ -180,11 +278,6 @@ export function App() {
       .catch(() => {
         setStocks(FALLBACK_STOCKS);
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    void runAnalysis();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -250,6 +343,9 @@ export function App() {
             <button className="small-button" type="button" disabled={!data?.klines.length} onClick={exportKlineCsv}>
               导出CSV
             </button>
+            <button className="small-button" type="button" aria-pressed={tdx2dbVisible} onClick={() => setTdx2dbVisible((visible) => !visible)}>
+              {tdx2dbVisible ? "隐藏通达信本地库" : "显示通达信本地库"}
+            </button>
             {refreshMessage && (
               <div
                 className={`refresh-banner ${data?.data_status?.ok === false ? "warning" : "success"}`}
@@ -261,7 +357,8 @@ export function App() {
             {error && <div className="error-banner">{error}</div>}
           </div>
           <SignalScanner
-            signalDate={scanParams.signalDate}
+            startSignalDate={scanParams.startSignalDate}
+            endSignalDate={scanParams.endSignalDate}
             period={scanParams.period}
             side={scanParams.side}
             type={scanParams.type}
@@ -269,16 +366,26 @@ export function App() {
             matches={scanMatches}
             message={scanMessage}
             progress={scanProgress}
-            selectedCode={selectedScanCode}
+            selectedMatchKey={selectedScanMatchKey}
             onChange={(next) => setScanParams((current) => ({ ...current, ...next }))}
             onScan={() => void runSignalScan()}
             onSelect={selectScanMatch}
           />
+          {tdx2dbVisible && (
+            <Tdx2DbPanel
+              status={tdx2dbStatus}
+              loading={tdx2dbLoading}
+              error={tdx2dbError}
+              onConfigure={(tdxPath) => void saveTdx2DbPath(tdxPath)}
+              onStart={() => void startTdxSync()}
+              onBackfill={() => void startTdxHistoryBackfill()}
+              onStop={() => void stopTdxSync()}
+            />
+          )}
           <ChartPanel data={data} focusedSignal={focusedSignal} chartHeight={chartHeight} layers={layers} />
         </div>
-        <SignalPanel data={data} selectedSignalId={focusedSignal?.id ?? null} onSignalClick={setFocusedSignal} />
+        <SignalPanel data={data} selectedSignalId={focusedSignal?.id ?? null} onSignalClick={setFocusedSignal} assistantParams={params} />
       </section>
-      <DataStatusFooter data={data} error={error} loading={loading} />
     </main>
   );
 }
@@ -323,7 +430,13 @@ function formatRefreshMessage(result: AnalysisResponse) {
   }
   const source = formatDataSource(status.source);
   const last = status.last_kline_time ?? "-";
-  return `${source}${status.ok ? "刷新成功" : "刷新异常"}：${status.kline_count} 根K线，最新 ${last}，刷新时间 ${status.refreshed_at}`;
+  const cache = result.analysis_cache;
+  const cacheText = cache?.mode === "hit"
+    ? "结构缓存命中"
+    : cache?.mode === "incremental"
+      ? `增量续算 ${cache.new_kline_count} 根`
+      : "结构缓存已重建";
+  return `${source}${status.ok ? "刷新成功" : "刷新异常"}：${status.kline_count} 根K线，${cacheText}，最新 ${last}`;
 }
 
 function formatDataSource(source: string) {
@@ -336,6 +449,8 @@ function formatDataSource(source: string) {
     akshare: "AKShare",
     sample: "备用数据",
   };
+  if (source === "local-cache") return "本地缓存";
+  if (source.startsWith("local-cache+")) return `本地缓存 + ${formatDataSource(source.slice("local-cache+".length))}`;
   return labels[source] ?? source;
 }
 

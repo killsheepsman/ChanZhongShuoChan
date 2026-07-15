@@ -8,7 +8,8 @@ interface ScanProgress {
 }
 
 interface SignalScannerProps {
-  signalDate: string;
+  startSignalDate: string;
+  endSignalDate: string;
   period: string;
   side: "buy" | "sell";
   type: 1 | 2 | 3;
@@ -16,14 +17,15 @@ interface SignalScannerProps {
   matches: SignalScanMatch[];
   message: string | null;
   progress: ScanProgress;
-  selectedCode: string;
-  onChange: (next: { signalDate?: string; period?: string; side?: "buy" | "sell"; type?: 1 | 2 | 3 }) => void;
+  selectedMatchKey: string;
+  onChange: (next: { startSignalDate?: string; endSignalDate?: string; period?: string; side?: "buy" | "sell"; type?: 1 | 2 | 3 }) => void;
   onScan: () => void;
   onSelect: (match: SignalScanMatch) => void;
 }
 
 export function SignalScanner({
-  signalDate,
+  startSignalDate,
+  endSignalDate,
   period,
   side,
   type,
@@ -31,7 +33,7 @@ export function SignalScanner({
   matches,
   message,
   progress,
-  selectedCode,
+  selectedMatchKey,
   onChange,
   onScan,
   onSelect,
@@ -40,8 +42,12 @@ export function SignalScanner({
     <div className="signal-scanner">
       <strong>买卖点筛选</strong>
       <label>
-        日期
-        <input type="date" value={signalDate} onChange={(event) => onChange({ signalDate: event.target.value })} />
+        开始
+        <input type="date" value={startSignalDate} onChange={(event) => onChange({ startSignalDate: event.target.value })} />
+      </label>
+      <label>
+        结束
+        <input type="date" value={endSignalDate} onChange={(event) => onChange({ endSignalDate: event.target.value })} />
       </label>
       <label>
         周期
@@ -79,17 +85,17 @@ export function SignalScanner({
       <label className="scan-results">
         命中股票
         <select
-          value={selectedCode}
+          value={selectedMatchKey}
           disabled={matches.length === 0}
           onChange={(event) => {
-            const match = matches.find((item) => item.code === event.target.value);
+            const match = matches.find((item) => matchKey(item) === event.target.value);
             if (match) onSelect(match);
           }}
         >
-          <option value="">{matches.length ? `共 ${matches.length} 只` : "暂无结果"}</option>
+          <option value="">{matches.length ? `共 ${matches.length} 条信号` : "暂无结果"}</option>
           {matches.map((match) => (
-            <option key={`${match.code}-${match.time}`} value={match.code}>
-              {match.code} {match.name} {Math.round(match.confidence * 100)}%
+            <option key={matchKey(match)} value={matchKey(match)}>
+              {match.time} {match.code} {match.name} {Math.round(match.confidence * 100)}%
             </option>
           ))}
         </select>
@@ -97,9 +103,7 @@ export function SignalScanner({
       <div className="scan-progress-panel">
         <div className="scan-progress-text">
           <span>{message ?? "等待筛选"}</span>
-          <span>
-            {progress.scanned}/{progress.total || 0} · 命中 {progress.matched}
-          </span>
+          <span>{progress.scanned}/{progress.total || 0} · 命中 {progress.matched}</span>
         </div>
         <div className="scan-progress-track">
           <div className="scan-progress-fill" style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }} />
@@ -107,4 +111,8 @@ export function SignalScanner({
       </div>
     </div>
   );
+}
+
+function matchKey(match: SignalScanMatch) {
+  return `${match.code}|${match.time}`;
 }

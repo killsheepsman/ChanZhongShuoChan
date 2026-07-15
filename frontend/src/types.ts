@@ -17,7 +17,7 @@ export interface StockOption {
 export interface SignalScanMatch extends StockOption {
   time: string;
   price: number;
-  status: "candidate" | "confirmed" | "invalidated";
+  status: "candidate" | "confirmed" | "invalidated" | "expired";
   confidence: number;
   source: string;
   last_kline_time: string | null;
@@ -27,7 +27,8 @@ export interface SignalScanResponse {
   job_id?: string;
   status?: "running" | "done" | "failed";
   criteria: {
-    signal_date: string;
+    start_signal_date: string;
+    end_signal_date: string;
     period: string;
     side: "buy" | "sell";
     type: 1 | 2 | 3;
@@ -74,6 +75,8 @@ export interface SegmentEvidence {
   candidate_stroke_ids: number[];
   candidate_zd: number | null;
   candidate_zg: number | null;
+  characteristic_stroke_ids: number[];
+  characteristic_pattern: string | null;
   guard_side: "high" | "low" | null;
   guard_price: number | null;
   candidate_extreme: number | null;
@@ -98,6 +101,21 @@ export interface Center {
   zd: number;
   gg: number;
   dd: number;
+  segment_ids: number[];
+  direction: "NONE" | "UP" | "DOWN" | "SIDEWAYS";
+  extend_count: number;
+  status: "RUNNING" | "ENDED";
+  break_segment_id: number | null;
+}
+
+export interface CenterExpansion {
+  id: string;
+  center_ids: number[];
+  overlap_low: number;
+  overlap_high: number;
+  gg: number;
+  dd: number;
+  status: "EXPANSION_CANDIDATE";
 }
 
 export interface Signal {
@@ -107,11 +125,16 @@ export interface Signal {
   index: number;
   time: string;
   price: number;
-  status: "candidate" | "confirmed" | "invalidated";
+  status: "candidate" | "confirmed" | "invalidated" | "expired";
   confidence: number;
   reason: string;
   center_id: number | null;
   segment_id: number | null;
+  divergence_ratio: number | null;
+  enter_segment_id: number | null;
+  leave_segment_id: number | null;
+  strength: number;
+  level: string;
 }
 
 export interface Divergence {
@@ -150,6 +173,7 @@ export interface AnalysisResponse {
     start_date: string;
     end_date: string;
     adjust: string;
+    allow_external: boolean;
   };
   data_status?: {
     ok: boolean;
@@ -161,6 +185,10 @@ export interface AnalysisResponse {
     source_first_kline_time?: string | null;
     source_last_kline_time?: string | null;
     kline_count: number;
+    from_cache?: boolean;
+    cache_updated?: boolean;
+    failed_sources?: Array<{ source: string; label: string; error: string }>;
+    external_allowed?: boolean;
   };
   engine?: {
     segment_engine: string;
@@ -172,6 +200,7 @@ export interface AnalysisResponse {
   strokes: Stroke[];
   segments: Segment[];
   centers: Center[];
+  center_expansions: CenterExpansion[];
   divergences: Divergence[];
   signals: Signal[];
   theory_marks: TheoryMark[];
@@ -181,5 +210,79 @@ export interface AnalysisResponse {
     center_count: number;
     reason: string;
   };
+  analysis_cache?: {
+    mode: "hit" | "incremental" | "rebuild";
+    hit: boolean;
+    new_kline_count: number;
+    recomputed_from_time: string | null;
+    engine_version: string;
+    updated_at: string;
+  };
   summary: Record<string, number>;
+}
+
+export interface WatchLevelView {
+  level: string;
+  available: boolean;
+  last_time: string | null;
+  close: number | null;
+  trend: string;
+  segment_state: string;
+  macd_state: string;
+  volume_ratio: number | null;
+  ma5: number | null;
+  ma10: number | null;
+  ma20: number | null;
+  ma30: number | null;
+}
+
+export interface WatchDecision {
+  symbol: string;
+  action: "BUY" | "SELL" | "WAIT" | "HOLD" | "NO_TRADE";
+  order_allowed: boolean;
+  priority: "P0" | "P1" | "P2" | "P3" | "P4";
+  position_percent: number;
+  market_coefficient: number;
+  current_price: number | null;
+  structure: string;
+  latest_signal: { label: string; time: string; price: number; status: string; reason: string } | null;
+  trigger_conditions: string[];
+  stop_loss: number | null;
+  targets: number[];
+  risks: string[];
+  conclusion: string;
+  levels: { daily: WatchLevelView; minute30: WatchLevelView };
+  generated_at: string;
+  rule_profile: string;
+  data_sources: Record<string, { ok: boolean; source: string; message: string; kline_count: number }>;
+}
+
+
+
+
+export interface Tdx2DbTableSummary {
+  period: string;
+  table: string;
+  bar_count: number;
+  stock_count: number;
+  first_time: string | null;
+  last_time: string | null;
+}
+
+export interface Tdx2DbStatus {
+  configured_path: string;
+  detected_path: string | null;
+  path_valid: boolean;
+  database_path: string;
+  installed: boolean;
+  executable: string;
+  sync: {
+    status: string;
+    message: string;
+    started_at: string | null;
+    finished_at: string | null;
+    exit_code: number | null;
+    running: boolean;
+  };
+  tables: Tdx2DbTableSummary[];
 }

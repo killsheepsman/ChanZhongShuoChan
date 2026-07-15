@@ -18,11 +18,11 @@ def detect_fractals(klines: list[KLine], min_gap: int = 1) -> list[Fractal]:
 
         if is_top:
             fractals.append(
-                Fractal(index=current.index, time=current.time, kind="top", price=current.high, high=current.high, low=current.low)
+                Fractal(index=current.index, time=current.high_time or current.time, kind="top", price=current.high, high=current.high, low=current.low)
             )
         elif is_bottom:
             fractals.append(
-                Fractal(index=current.index, time=current.time, kind="bottom", price=current.low, high=current.high, low=current.low)
+                Fractal(index=current.index, time=current.low_time or current.time, kind="bottom", price=current.low, high=current.high, low=current.low)
             )
     return _dedupe_alternating(fractals, min_gap)
 

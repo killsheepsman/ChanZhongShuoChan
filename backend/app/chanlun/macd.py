@@ -1,21 +1,49 @@
 from __future__ import annotations
 
-import pandas as pd
-
 from .models import KLine
 
 
+EMA12_ALPHA = 2 / 13
+EMA26_ALPHA = 2 / 27
+DEA_ALPHA = 2 / 10
+
+
 def calculate_macd(klines: list[KLine]) -> list[dict[str, float]]:
-    closes = pd.Series([kline.close for kline in klines], dtype="float64")
-    ema12 = closes.ewm(span=12, adjust=False).mean()
-    ema26 = closes.ewm(span=26, adjust=False).mean()
-    dif = ema12 - ema26
-    dea = dif.ewm(span=9, adjust=False).mean()
-    hist = (dif - dea) * 2
-    return [
-        {"dif": float(dif.iloc[i]), "dea": float(dea.iloc[i]), "hist": float(hist.iloc[i])}
-        for i in range(len(klines))
-    ]
+    return continue_macd([], klines)
+
+
+def continue_macd(
+    previous: list[dict[str, float]], klines: list[KLine]
+) -> list[dict[str, float]]:
+    """Advance recursive EMA state without replaying prior closes."""
+    result = list(previous)
+    if previous:
+        ema12 = previous[-1]["ema12"]
+        ema26 = previous[-1]["ema26"]
+        dea = previous[-1]["dea"]
+    else:
+        ema12 = ema26 = dea = 0.0
+
+    for kline in klines:
+        if not result:
+            ema12 = ema26 = kline.close
+            dif = 0.0
+            dea = 0.0
+        else:
+            ema12 = EMA12_ALPHA * kline.close + (1 - EMA12_ALPHA) * ema12
+            ema26 = EMA26_ALPHA * kline.close + (1 - EMA26_ALPHA) * ema26
+            dif = ema12 - ema26
+            dea = DEA_ALPHA * dif + (1 - DEA_ALPHA) * dea
+        result.append(
+            {
+                "dif": float(dif),
+                "dea": float(dea),
+                "hist": float((dif - dea) * 2),
+                "ema12": float(ema12),
+                "ema26": float(ema26),
+            }
+        )
+    return result
 
 
 def macd_area(macd: list[dict[str, float]], start: int, end: int) -> float:

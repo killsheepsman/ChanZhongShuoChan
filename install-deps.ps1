@@ -9,6 +9,7 @@ $BackendDir = Join-Path $Root "backend"
 $FrontendDir = Join-Path $Root "frontend"
 $PythonVenv = Join-Path $Root ".venv"
 $PythonExe = Join-Path $PythonVenv "Scripts\python.exe"
+$Tdx2DbPackageDir = Join-Path $Root "third_party\tdx2db-package"
 
 function Find-Python {
   $commands = @("py", "python")
@@ -54,7 +55,23 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
 
 Write-Host "Installing backend Python packages..." -ForegroundColor Green
 & $PythonExe -m pip install --upgrade pip
-& $PythonExe -m pip install -r (Join-Path $BackendDir "requirements.txt")
+
+$pipInstallArgs = @("install", "--retries", "5", "--timeout", "60")
+if (Test-Path -LiteralPath $Tdx2DbPackageDir) {
+  Write-Host "Using bundled tdx2db package..." -ForegroundColor Green
+  $pipInstallArgs += @("--find-links", $Tdx2DbPackageDir)
+}
+$pipInstallArgs += @("-r", (Join-Path $BackendDir "requirements.txt"))
+& $PythonExe -m pip @pipInstallArgs
+
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Primary Python package source failed; retrying with the mirror..." -ForegroundColor Yellow
+  $mirrorArgs = @("install", "--retries", "5", "--timeout", "60", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple") + $pipInstallArgs[1..($pipInstallArgs.Length - 1)]
+  & $PythonExe -m pip @mirrorArgs
+}
+if ($LASTEXITCODE -ne 0) {
+  throw "Python dependency installation failed. Check the network connection and run the installer again."
+}
 
 Write-Host "Installing frontend Node packages..." -ForegroundColor Green
 Push-Location $FrontendDir

@@ -2,6 +2,12 @@ import { createChart, IChartApi, ISeriesApi, LineStyle, UTCTimestamp } from "lig
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AnalysisResponse, Center, KLine, Segment, Signal, Stroke, TheoryMark } from "../types";
 
+// The complete two-year five-minute history is roughly 21,000 bars. Render it
+// in full and only enter explicit paging above this guardrail.
+const MAX_FULL_HISTORY_KLINES = 25_000;
+const WINDOW_KLINES = 3_000;
+const INITIAL_FOCUS_KLINES = 360;
+
 interface ChartPanelProps {
   data: AnalysisResponse | null;
   focusedSignal: Signal | null;
@@ -24,8 +30,30 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const overlayRefs = useRef<ISeriesApi<"Line">[]>([]);
   const dataRef = useRef<AnalysisResponse | null>(null);
+  const marketKlineByTimeRef = useRef<Map<UTCTimestamp, KLine>>(new Map());
   const [hoveredKLine, setHoveredKLine] = useState<KLine | null>(null);
+  const [windowStart, setWindowStart] = useState(0);
 
+  // Render requested history in full whenever practical. Windowing is only for
+  // unusually large feeds and is disclosed by the chart controls.
+  const marketKlines = useMemo(() => data?.raw_klines?.length ? data.raw_klines : data?.klines ?? [], [data]);
+  const isWindowed = marketKlines.length > MAX_FULL_HISTORY_KLINES;
+  const maximumWindowStart = Math.max(0, marketKlines.length - WINDOW_KLINES);
+  const displayStart = isWindowed ? Math.min(Math.max(0, windowStart), maximumWindowStart) : 0;
+  const displayKlines = useMemo(
+    () => isWindowed ? marketKlines.slice(displayStart, displayStart + WINDOW_KLINES) : marketKlines,
+    [displayStart, isWindowed, marketKlines]
+  );
+  const displayIndexByTime = useMemo(
+    () => new Map(displayKlines.map((kline, index) => [kline.time, index])),
+    [displayKlines]
+  );
+  const marketIndexByTime = useMemo(
+    () => new Map(marketKlines.map((kline, index) => [kline.time, index])),
+    [marketKlines]
+  );
+  const visibleStartTime = displayKlines[0] ? toTimestamp(displayKlines[0].time) : null;
+  const visibleEndTime = displayKlines.at(-1) ? toTimestamp(displayKlines.at(-1)!.time) : null;
   const timeByIndex = useMemo(() => {
     const map = new Map<number, UTCTimestamp>();
     data?.klines.forEach((kline) => map.set(kline.index, toTimestamp(kline.time)));
@@ -34,6 +62,15 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
 
   useEffect(() => {
     dataRef.current = data;
+    const currentMarketKlines = data?.raw_klines?.length ? data.raw_klines : data?.klines ?? [];
+    marketKlineByTimeRef.current = new Map(
+      currentMarketKlines.map((kline) => [toTimestamp(kline.time), kline])
+    );
+    setWindowStart(
+      currentMarketKlines.length > MAX_FULL_HISTORY_KLINES
+        ? Math.max(0, currentMarketKlines.length - WINDOW_KLINES)
+        : 0
+    );
   }, [data]);
 
   useEffect(() => {
@@ -92,8 +129,7 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
         setHoveredKLine(null);
         return;
       }
-      const kline = currentData.klines.find((item) => toTimestamp(item.time) === param.time);
-      setHoveredKLine(kline ?? null);
+      setHoveredKLine(marketKlineByTimeRef.current.get(param.time as UTCTimestamp) ?? null);
     });
 
     return () => {
@@ -111,7 +147,7 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
     overlayRefs.current = [];
 
     candleRef.current.setData(
-      data.klines.map((kline) => ({
+      displayKlines.map((kline) => ({
         time: toTimestamp(kline.time),
         open: kline.open,
         high: kline.high,
@@ -120,7 +156,7 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
       }))
     );
     volumeRef.current.setData(
-      data.klines.map((kline) => ({
+      displayKlines.map((kline) => ({
         time: toTimestamp(kline.time),
         value: kline.volume,
         color: kline.close >= kline.open ? "rgba(239, 68, 68, 0.42)" : "rgba(34, 197, 94, 0.42)",
@@ -128,8 +164,13 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
     );
 
     const markers = [];
+    const isVisibleTime = (time: string) => {
+      const timestamp = toTimestamp(time);
+      return visibleStartTime !== null && visibleEndTime !== null && timestamp >= visibleStartTime && timestamp <= visibleEndTime;
+    };
     if (layers.fractals) {
       for (const fractal of data.fractals) {
+        if (!isVisibleTime(fractal.time)) continue;
         markers.push({
           time: toTimestamp(fractal.time),
           position: fractal.kind === "top" ? "aboveBar" : "belowBar",
@@ -143,7 +184,7 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
       const segmentById = new Map(data.segments.map((segment) => [segment.id, segment]));
       for (const divergence of data.divergences) {
         const segment = segmentById.get(divergence.segment_id);
-        if (!segment) continue;
+        if (!segment || !isVisibleTime(segment.end_time)) continue;
         markers.push({
           time: toTimestamp(segment.end_time),
           position: divergence.side === "buy" ? "belowBar" : "aboveBar",
@@ -155,6 +196,7 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
     }
     if (layers.theory) {
       for (const mark of data.theory_marks ?? []) {
+        if (!isVisibleTime(mark.time)) continue;
         markers.push({
           time: toTimestamp(mark.time),
           position: markerPosition(mark),
@@ -166,19 +208,21 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
     }
     if (layers.signals) {
       for (const signal of data.signals) {
+        if (!isVisibleTime(signal.time)) continue;
         const isCandidate = signal.status === "candidate";
-        const isInvalidated = signal.status === "invalidated";
+        const isInvalidated = signal.status === "invalidated" || signal.status === "expired";
         markers.push({
           time: toTimestamp(signal.time),
           position: signal.side === "buy" ? "belowBar" : "aboveBar",
           color: signal.side === "buy" ? (isInvalidated ? "#64748b" : "#22c55e") : (isInvalidated ? "#64748b" : "#ef4444"),
           shape: signal.side === "buy" ? "arrowUp" : "arrowDown",
-          text: `${signal.side === "buy" ? "B" : "S"}${signal.type}${isCandidate ? "?" : isInvalidated ? "x" : ""} ${Math.round(signal.confidence * 100)}%`,
+          text: `${signal.side === "buy" ? "B" : "S"}${signal.type}${isCandidate ? "?" : signal.status === "expired" ? "旧" : isInvalidated ? "x" : ""} ${Math.round(signal.confidence * 100)}%`,
         } as const);
       }
     }
     if (layers.segments) {
       for (const segment of data.segments) {
+        if (!isVisibleTime(segment.end_time)) continue;
         const isRunning = segment.status === "IS_RUNNING";
         markers.push({
           time: toTimestamp(segment.end_time),
@@ -197,30 +241,33 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
     if (layers.centers) drawCenters(data.centers, timeByIndex);
     if (layers.signals) drawSignalLevels(data.signals, timeByIndex);
 
-    fitFullRange();
-  }, [data, layers, timeByIndex]);
+    showFullHistory();
+  }, [data, displayKlines, layers, timeByIndex]);
 
   useEffect(() => {
     if (!data || !focusedSignal || !chartRef.current) return;
+    const marketIndex = marketIndexByTime.get(focusedSignal.time);
+    if (marketIndex === undefined) return;
+    const displayEnd = displayStart + displayKlines.length;
+    if (marketIndex < displayStart || marketIndex >= displayEnd) {
+      setWindowStart(Math.min(maximumWindowStart, Math.max(0, marketIndex - Math.floor(WINDOW_KLINES / 2))));
+      return;
+    }
     const padding = 34;
+    const focusedIndex = marketIndex - displayStart;
     chartRef.current.timeScale().setVisibleLogicalRange({
-      from: Math.max(0, focusedSignal.index - padding),
-      to: Math.min(data.klines.length - 1, focusedSignal.index + padding),
+      from: Math.max(0, focusedIndex - padding),
+      to: Math.min(displayKlines.length - 1, focusedIndex + padding),
     });
-    const kline = data.klines.find((item) => item.index === focusedSignal.index);
-    setHoveredKLine(kline ?? null);
-  }, [data, focusedSignal]);
-
-  useEffect(() => {
-    if (!data || !chartRef.current) return;
-    window.requestAnimationFrame(() => fitFullRange());
-  }, [chartHeight, data]);
+    setHoveredKLine(displayKlines[focusedIndex] ?? null);
+  }, [data, displayKlines, displayStart, focusedSignal, marketIndexByTime, maximumWindowStart]);
 
   function drawLines(items: Array<Stroke | Segment>, color: string, lineWidth: 1 | 2 | 3, timeMap: Map<number, UTCTimestamp>) {
     for (const item of items) {
       const start = timeMap.get(item.start_index);
       const end = timeMap.get(item.end_index);
       if (!start || !end || !chartRef.current) continue;
+      if (visibleStartTime === null || visibleEndTime === null || start < visibleStartTime || end > visibleEndTime) continue;
       const isRunningSegment = "status" in item && item.status === "IS_RUNNING";
       const series = chartRef.current.addLineSeries({
         color,
@@ -242,6 +289,7 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
       const start = timeMap.get(center.start_index);
       const end = timeMap.get(center.end_index);
       if (!start || !end || !chartRef.current) continue;
+      if (visibleStartTime === null || visibleEndTime === null || start < visibleStartTime || end > visibleEndTime) continue;
       const label = center.id + 1;
       for (const [value, side] of [
         [center.zg, "ZG"],
@@ -278,7 +326,8 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
       const start = timeMap.get(signal.index);
       const end = timeMap.get(signal.index + 5) ?? timeMap.get(signal.index + 3) ?? timeMap.get(signal.index + 1);
       if (!start || !end) continue;
-      const color = signal.status === "invalidated" ? "#64748b" : signal.side === "buy" ? "#22c55e" : "#ef4444";
+      if (visibleStartTime === null || visibleEndTime === null || start < visibleStartTime || start > visibleEndTime || end > visibleEndTime) continue;
+      const color = signal.status === "invalidated" || signal.status === "expired" ? "#64748b" : signal.side === "buy" ? "#22c55e" : "#ef4444";
       const series = chartRef.current.addLineSeries({
         color,
         lineWidth: signal.status === "confirmed" ? 2 : 1,
@@ -319,24 +368,50 @@ export function ChartPanel({ data, focusedSignal, chartHeight, layers }: ChartPa
     return mark.side === "buy" ? "arrowUp" as const : "arrowDown" as const;
   }
 
-  function fitFullRange() {
-    if (!chartRef.current || !data?.klines.length) return;
-    chartRef.current.timeScale().fitContent();
+  function focusRecentBars() {
+    if (!chartRef.current || !displayKlines.length) return;
     chartRef.current.timeScale().setVisibleLogicalRange({
-      from: 0,
-      to: data.klines.length - 1,
+      from: Math.max(0, displayKlines.length - INITIAL_FOCUS_KLINES),
+      to: displayKlines.length - 1,
     });
   }
+
+  function showFullHistory() {
+    if (!chartRef.current || !displayKlines.length) return;
+    chartRef.current.timeScale().fitContent();
+  }
+
+  function showPreviousWindow() {
+    setWindowStart((current) => Math.max(0, current - WINDOW_KLINES));
+  }
+
+  function showNextWindow() {
+    setWindowStart((current) => Math.min(maximumWindowStart, current + WINDOW_KLINES));
+  }
+
+  const hoveredMarketIndex = hoveredKLine ? displayIndexByTime.get(hoveredKLine.time) ?? -1 : -1;
 
   return (
     <div className="chart-wrap" style={{ height: chartHeight }}>
       <div className="quote-strip">
         {hoveredKLine ? (
-          <QuoteStrip kline={hoveredKLine} previous={data?.klines[hoveredKLine.index - 1]} />
+          <QuoteStrip kline={hoveredKLine} previous={hoveredMarketIndex > 0 ? displayKlines[hoveredMarketIndex - 1] : undefined} />
         ) : (
           <span className="muted">鼠标移到K线上查看开高低收、涨跌幅、成交量和成交额</span>
         )}
-        <button className="small-button" onClick={fitFullRange}>全貌</button>
+        {isWindowed && (
+          <>
+            <span className="muted">图表 {displayStart + 1}-{displayStart + displayKlines.length} / {marketKlines.length} 根</span>
+            <button className="small-button" type="button" onClick={showPreviousWindow} disabled={displayStart === 0}>前一段</button>
+            <button className="small-button" type="button" onClick={showNextWindow} disabled={displayStart >= maximumWindowStart}>后一段</button>
+          </>
+        )}
+        <button className="small-button" type="button" onClick={focusRecentBars}>最新</button>
+        {!isWindowed && marketKlines.length > 0 && (
+          <span className="muted">{`\u56fe\u8868 1-${displayKlines.length} / ${marketKlines.length} \u6839`}</span>
+        )}
+        <button className="small-button" type="button" onClick={showFullHistory}>{"\u5168\u5386\u53f2"}</button>
+
       </div>
       <div className="chart-surface" ref={containerRef} />
     </div>

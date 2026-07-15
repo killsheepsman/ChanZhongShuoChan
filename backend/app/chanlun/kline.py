@@ -74,6 +74,10 @@ def klines_from_frame(frame: pd.DataFrame) -> list[KLine]:
                 close=_float(row["close"]),
                 volume=_float(row.get("volume", 0.0)),
                 amount=_float(row.get("amount", 0.0)),
+                source_start_time=str(row["time"]),
+                source_end_time=str(row["time"]),
+                high_time=str(row["time"]),
+                low_time=str(row["time"]),
             )
         )
     return rows
@@ -107,7 +111,11 @@ def _infer_direction(result: list[KLine], current: KLine) -> Direction:
         return "up" if current.close >= result[-1].close else "down"
     prev = result[-2]
     last = result[-1]
-    return "up" if last.high >= prev.high else "down"
+    if last.high > prev.high and last.low > prev.low:
+        return "up"
+    if last.high < prev.high and last.low < prev.low:
+        return "down"
+    return "up" if last.close >= prev.close else "down"
 
 
 def _merge(left: KLine, right: KLine, direction: Direction) -> KLine:
@@ -117,6 +125,13 @@ def _merge(left: KLine, right: KLine, direction: Direction) -> KLine:
     else:
         high = min(left.high, right.high)
         low = min(left.low, right.low)
+    if direction == "up":
+        high_time = (right.high_time or right.time) if right.high > left.high else (left.high_time or left.time)
+        low_time = (right.low_time or right.time) if right.low > left.low else (left.low_time or left.time)
+    else:
+        high_time = (right.high_time or right.time) if right.high < left.high else (left.high_time or left.time)
+        low_time = (right.low_time or right.time) if right.low < left.low else (left.low_time or left.time)
+
     return KLine(
         index=right.index,
         time=right.time,
@@ -126,6 +141,10 @@ def _merge(left: KLine, right: KLine, direction: Direction) -> KLine:
         close=right.close,
         volume=left.volume + right.volume,
         amount=left.amount + right.amount,
+        source_start_time=left.source_start_time or left.time,
+        source_end_time=right.source_end_time or right.time,
+        high_time=high_time,
+        low_time=low_time,
     )
 
 

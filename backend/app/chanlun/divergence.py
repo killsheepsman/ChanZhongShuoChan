@@ -1,79 +1,59 @@
 from __future__ import annotations
 
-from .macd import macd_area
 from .models import Center, Divergence, Segment
 
 
-def detect_divergences(segments: list[Segment], centers: list[Center], macd: list[dict[str, float]]) -> list[Divergence]:
+def detect_divergences(
+    segments: list[Segment], centers: list[Center], macd: list[dict[str, float]] | None = None
+) -> list[Divergence]:
+    """Detect standard trend divergence with the same 0.90 rule as type-1 signals."""
+    positions = {segment.id: index for index, segment in enumerate(segments)}
     divergences: list[Divergence] = []
-    segment_by_id = {segment.id: segment for segment in segments}
-
+    run_direction: str | None = None
+    run_length = 0
     for center in centers:
-        enter = _enter_segment(center, segments, segment_by_id)
-        leave = _leave_segment(center, segments)
-        if not enter or not leave:
+        if center.direction not in ("UP", "DOWN"):
+            run_direction = None
+            run_length = 0
+            continue
+        if center.direction == run_direction:
+            run_length += 1
+        else:
+            run_direction = center.direction
+            run_length = 1
+        if run_length < 2 or not center.segment_ids:
             continue
 
-        enter_power = _segment_power(enter, macd)
-        leave_power = _segment_power(leave, macd)
-        if enter_power <= 0:
+        expected = "down" if center.direction == "DOWN" else "up"
+        first_position = positions.get(center.segment_ids[0])
+        if first_position is None or first_position == 0:
             continue
-
-        strength = max(0.0, min(1.0, 1 - leave_power / enter_power))
-        if strength < 0.12:
+        enter = segments[first_position - 1]
+        leave = _leave(center, segments, expected)
+        if leave is None or enter.direction != expected:
             continue
-
-        trend_kind = _trend_kind(center, centers)
-        if leave.direction == "down" and leave.low < center.zd:
-            divergences.append(
-                Divergence(
-                    segment_id=leave.id,
-                    side="buy",
-                    kind="trend" if trend_kind == "trend_down" else "consolidation",
-                    strength=round(strength, 3),
-                    reason=f"离开中枢下跌段力度弱于进入段，力度比 {leave_power / enter_power:.2f}",
-                )
+        enter_power = abs(enter.end_price - enter.start_price)
+        leave_power = abs(leave.end_price - leave.start_price)
+        if enter_power <= 0 or leave_power / enter_power >= 0.90:
+            continue
+        ratio = leave_power / enter_power
+        divergences.append(
+            Divergence(
+                segment_id=leave.id,
+                side="buy" if expected == "down" else "sell",
+                kind="trend",
+                strength=round(1 - ratio, 3),
+                reason=f"连续同向中枢趋势背驰，离开段/进入段力度比 {ratio:.3f}",
             )
-        elif leave.direction == "up" and leave.high > center.zg:
-            divergences.append(
-                Divergence(
-                    segment_id=leave.id,
-                    side="sell",
-                    kind="trend" if trend_kind == "trend_up" else "consolidation",
-                    strength=round(strength, 3),
-                    reason=f"离开中枢上涨段力度弱于进入段，力度比 {leave_power / enter_power:.2f}",
-                )
-            )
+        )
     return divergences
 
 
-def _enter_segment(center: Center, segments: list[Segment], segment_by_id: dict[int, Segment]) -> Segment | None:
-    first_id = center.segment_ids[0] if center.segment_ids else None
-    before = [segment for segment in segments if first_id is not None and segment.id < first_id]
-    if before:
-        return before[-1]
-    return segment_by_id.get(center.segment_ids[0]) if center.segment_ids else None
-
-
-def _leave_segment(center: Center, segments: list[Segment]) -> Segment | None:
-    last_center_id = center.segment_ids[-1] if center.segment_ids else None
-    after = [segment for segment in segments if last_center_id is not None and segment.id > last_center_id]
-    return after[0] if after else None
-
-
-def _segment_power(segment: Segment, macd: list[dict[str, float]]) -> float:
-    area = abs(macd_area(macd, segment.start_index, segment.end_index))
-    amplitude = max(segment.high - segment.low, 0.0)
-    return area + amplitude
-
-
-def _trend_kind(center: Center, centers: list[Center]) -> str:
-    previous = [item for item in centers if item.end_index < center.start_index]
-    if not previous:
-        return "consolidation"
-    last = previous[-1]
-    if center.zd > last.zg:
-        return "trend_up"
-    if center.zg < last.zd:
-        return "trend_down"
-    return "consolidation"
+def _leave(center: Center, segments: list[Segment], direction: str) -> Segment | None:
+    member_ids = set(center.segment_ids)
+    members = [segment for segment in segments if segment.id in member_ids]
+    for segment in reversed(members[2:]):
+        outside = segment.end_price < center.zd if direction == "down" else segment.end_price > center.zg
+        if segment.direction == direction and outside:
+            return segment
+    return None

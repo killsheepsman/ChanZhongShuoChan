@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from app.chanlun.analyzer import ANALYSIS_ENGINE_VERSION
 
-DB_PATH = Path(__file__).resolve().parents[3] / "data" / "signals_rules_v13.sqlite3"
+
+DB_PATH = Path(__file__).resolve().parents[3] / "data" / "signals_rules_v14.sqlite3"
 _DB_LOCK = threading.Lock()
 
 
@@ -25,6 +28,7 @@ def init_signal_store() -> None:
                 last_kline_time TEXT,
                 source TEXT NOT NULL,
                 signal_count INTEGER NOT NULL,
+                engine_version TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (symbol, period, adjust)
             );
@@ -62,9 +66,9 @@ def is_index_current(symbol: str, period: str, adjust: str, target_date: str) ->
         row = conn.execute(
             """
             SELECT end_date FROM signal_index_state
-            WHERE symbol = ? AND period = ? AND adjust = ?
+            WHERE symbol = ? AND period = ? AND adjust = ? AND engine_version = ?
             """,
-            (symbol, period, adjust),
+            (symbol, period, adjust, ANALYSIS_ENGINE_VERSION),
         ).fetchone()
     return bool(row and str(row["end_date"]) >= target_date)
 
@@ -81,9 +85,9 @@ def count_current_symbols(symbols: list[str], period: str, adjust: str, target_d
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS count FROM signal_index_state
-                WHERE period = ? AND adjust = ? AND end_date >= ? AND symbol IN ({placeholders})
+                WHERE period = ? AND adjust = ? AND end_date >= ? AND engine_version = ? AND symbol IN ({placeholders})
                 """,
-                (period, adjust, target_date, *chunk),
+                (period, adjust, target_date, ANALYSIS_ENGINE_VERSION, *chunk),
             ).fetchone()
             total += int(row["count"] if row else 0)
     return total
@@ -148,9 +152,9 @@ def upsert_stock_signals(
             """
             INSERT OR REPLACE INTO signal_index_state (
                 symbol, name, period, adjust, start_date, end_date, last_kline_time,
-                source, signal_count, updated_at
+                source, signal_count, engine_version, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol,
@@ -162,6 +166,7 @@ def upsert_stock_signals(
                 last_kline_time,
                 source,
                 len(signal_rows),
+                ANALYSIS_ENGINE_VERSION,
                 updated_at,
             ),
         )
@@ -169,7 +174,8 @@ def upsert_stock_signals(
 
 def query_signal_matches(
     *,
-    signal_date: str,
+    start_signal_date: str,
+    end_signal_date: str,
     period: str,
     adjust: str,
     side: str,
@@ -182,15 +188,15 @@ def query_signal_matches(
             """
             SELECT symbol, name, signal_time, price, status, confidence, source, last_kline_time
             FROM signal_points
-            WHERE signal_date = ?
+            WHERE signal_date BETWEEN ? AND ?
               AND period = ?
               AND adjust = ?
               AND side = ?
               AND signal_type = ?
-            ORDER BY confidence DESC, symbol ASC
+            ORDER BY signal_date DESC, confidence DESC, symbol ASC
             LIMIT ?
             """,
-            (signal_date, period, adjust, side, signal_type, max_results),
+            (start_signal_date, end_signal_date, period, adjust, side, signal_type, max_results),
         ).fetchall()
     return [
         {
@@ -207,10 +213,18 @@ def query_signal_matches(
     ]
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _signal_date(value: str) -> str:

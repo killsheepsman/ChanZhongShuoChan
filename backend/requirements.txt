@@ -1,6 +1,10 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-pandas>=2.2.0
+pandas>=2.2.3,<3
 numpy>=1.26.0
 akshare>=1.15.0
 pydantic>=2.7.0
+pytdx>=1.72,<1.73
+baostock>=0.8.9,<0.9
+
+tdx2db==0.5.0

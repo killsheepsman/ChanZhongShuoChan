@@ -6,7 +6,7 @@ from .models import Fractal, Stroke
 def detect_strokes(
     fractals: list[Fractal],
     min_kline_count: int = 4,
-    min_amplitude_pct: float = 0.003,
+    min_amplitude_pct: float | None = None,
 ) -> list[Stroke]:
     """Build a continuous stroke chain from confirmed alternating fractals.
 
@@ -14,26 +14,29 @@ def detect_strokes(
     the opposite fractal qualifies. Build the pivot list first, then materialize
     strokes, so a previously emitted stroke cannot retain an obsolete endpoint.
     """
-    if len(fractals) < 2:
+    first_bottom = next((index for index, item in enumerate(fractals) if item.kind == "bottom"), None)
+    if first_bottom is None or first_bottom >= len(fractals) - 1:
         return []
 
-    pivots: list[Fractal] = [fractals[0]]
-    for current in fractals[1:]:
+    pivots: list[Fractal] = [fractals[first_bottom]]
+    for current in fractals[first_bottom + 1 :]:
         last = pivots[-1]
         if current.kind == last.kind:
-            if _more_extreme(last, current) != last:
+            if _is_more_extreme(current, last):
                 pivots[-1] = current
             continue
-        if (
-            _is_valid_distance(last, current, min_kline_count)
-            and _is_valid_amplitude(last, current, min_amplitude_pct)
-            and _has_expected_price_direction(last, current)
-        ):
-            pivots.append(current)
+        if not _is_valid_distance(last, current, min_kline_count):
+            continue
+        if not _has_expected_price_direction(last, current):
+            continue
+        if min_amplitude_pct is not None and min_amplitude_pct > 0 and not _is_valid_amplitude(last, current, min_amplitude_pct):
+            continue
+        pivots.append(current)
 
     strokes: list[Stroke] = []
-    for start, end in zip(pivots, pivots[1:]):
-        direction = "up" if end.price > start.price else "down"
+    last_position = len(pivots) - 2
+    for position, (start, end) in enumerate(zip(pivots, pivots[1:])):
+        direction = "up" if start.kind == "bottom" else "down"
         if not _matches_fractal_direction(start, end, direction):
             continue
         strokes.append(
@@ -47,15 +50,16 @@ def detect_strokes(
                 direction=direction,
                 high=max(start.price, end.price),
                 low=min(start.price, end.price),
+                status="PENDING" if position == last_position else "CONFIRMED",
             )
         )
-    return _continuous_strokes(strokes)
+    return strokes
 
 
-def _more_extreme(left: Fractal, right: Fractal) -> Fractal:
-    if left.kind == "top":
-        return right if right.price > left.price else left
-    return right if right.price < left.price else left
+def _is_more_extreme(candidate: Fractal, reference: Fractal) -> bool:
+    if candidate.kind == "top":
+        return candidate.high > reference.high
+    return candidate.low < reference.low
 
 
 def _is_valid_distance(left: Fractal, right: Fractal, min_kline_count: int) -> bool:
@@ -69,15 +73,15 @@ def _is_valid_amplitude(left: Fractal, right: Fractal, min_amplitude_pct: float)
 
 
 def _has_expected_price_direction(start: Fractal, end: Fractal) -> bool:
-    return (start.kind == "bottom" and end.kind == "top" and end.price > start.price) or (
-        start.kind == "top" and end.kind == "bottom" and end.price < start.price
+    return (start.kind == "bottom" and end.kind == "top" and end.high > start.high) or (
+        start.kind == "top" and end.kind == "bottom" and end.low < start.low
     )
 
 
 def _matches_fractal_direction(start: Fractal, end: Fractal, direction: str) -> bool:
     if direction == "up":
-        return start.kind == "bottom" and end.kind == "top" and end.price > start.price
-    return start.kind == "top" and end.kind == "bottom" and end.price < start.price
+        return start.kind == "bottom" and end.kind == "top" and end.high > start.high
+    return start.kind == "top" and end.kind == "bottom" and end.low < start.low
 
 
 def _continuous_strokes(strokes: list[Stroke]) -> list[Stroke]:

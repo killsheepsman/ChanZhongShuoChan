@@ -1,5 +1,8 @@
+import { useMemo } from "react";
 import type { AnalyzeParams } from "../lib/api";
 import type { StockOption } from "../types";
+
+const MAX_STOCK_SUGGESTIONS = 80;
 
 interface ControlBarProps {
   params: AnalyzeParams;
@@ -28,6 +31,13 @@ export function ControlBar({
   onNextStock,
   onRun,
 }: ControlBarProps) {
+  const codeOptions = useMemo(() => matchingStocks(stocks, params.symbol, params.symbol), [params.symbol, stocks]);
+  const nameOptions = useMemo(() => matchingStocks(stocks, stockNameInput, params.symbol), [params.symbol, stockNameInput, stocks]);
+  const selectOptions = useMemo(
+    () => matchingStocks(stocks, stockNameInput || params.symbol, params.symbol),
+    [params.symbol, stockNameInput, stocks]
+  );
+
   function pickByCode(value: string) {
     const code = value.trim().padStart(value.trim().length >= 6 ? 6 : value.trim().length, "0");
     const stock = stocks.find((item) => item.code === code);
@@ -82,7 +92,7 @@ export function ControlBar({
             if (stock) onSelectStock(stock);
           }}
         >
-          {stocks.map((stock) => (
+          {selectOptions.map((stock) => (
             <option key={stock.code} value={stock.code}>
               {stock.code} {stock.name}
             </option>
@@ -123,6 +133,15 @@ export function ControlBar({
         </select>
       </label>
 
+      <label className="external-data-toggle" title="关闭时只读取通达信本地库和项目缓存；开启后才允许联网补齐本地缺失的最新数据。">
+        <span>允许外部补数</span>
+        <input
+          type="checkbox"
+          checked={params.allowExternal}
+          onChange={(event) => onChange({ ...params, allowExternal: event.target.checked })}
+        />
+      </label>
+
       <div className="run-controls">
         <button className="nav-button" type="button" onClick={onPrevStock} disabled={loading || stocks.length === 0}>
           上一只
@@ -136,14 +155,14 @@ export function ControlBar({
       </div>
 
       <datalist id="stock-code-list">
-        {stocks.map((stock) => (
+        {codeOptions.map((stock) => (
           <option key={stock.code} value={stock.code}>
             {stock.name}
           </option>
         ))}
       </datalist>
       <datalist id="stock-name-list">
-        {stocks.map((stock) => (
+        {nameOptions.map((stock) => (
           <option key={stock.code} value={stock.name}>
             {stock.code}
           </option>
@@ -151,4 +170,14 @@ export function ControlBar({
       </datalist>
     </header>
   );
+}
+
+function matchingStocks(stocks: StockOption[], query: string, selectedCode: string) {
+  const normalized = query.trim().toLocaleLowerCase();
+  const selected = stocks.find((stock) => stock.code === selectedCode);
+  const matches = normalized
+    ? stocks.filter((stock) => stock.code.includes(normalized) || stock.name.toLocaleLowerCase().includes(normalized))
+    : stocks;
+  const ordered = selected ? [selected, ...matches.filter((stock) => stock.code !== selected.code)] : matches;
+  return ordered.slice(0, MAX_STOCK_SUGGESTIONS);
 }
