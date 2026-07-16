@@ -137,6 +137,12 @@ export async function stopTdx2DbSync(): Promise<Tdx2DbStatus> {
   return response.json();
 }
 
+export async function optimizeTdx2Db(): Promise<Tdx2DbStatus> {
+  const response = await fetch(`${API_BASE}/api/tdx2db/optimize?_=${Date.now()}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(await apiErrorMessage(response, "清理通达信本地库失败"));
+  return response.json();
+}
+
 async function apiErrorMessage(response: Response, fallback: string): Promise<string> {
   try {
     const payload = await response.json();

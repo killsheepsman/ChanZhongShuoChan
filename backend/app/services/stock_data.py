@@ -235,6 +235,11 @@ def fetch_cached_or_akshare_klines(
     allow_external: bool = False,
 ) -> KLineFetchResult:
     """Read local TongDaXin/cache data first; online providers are opt-in supplements."""
+    if allow_external:
+        # Realtime mode must not remain pinned to yesterday's saved form value.
+        today_key = datetime.now().strftime("%Y%m%d")
+        if _date_key(end_date) < today_key:
+            end_date = today_key
     tdx_klines = load_tdx2db_klines(symbol, period, start_date, end_date)
     cached = load_cached_klines(symbol, period, adjust, start_date, end_date)
     state = get_cache_state(symbol, period, adjust)
@@ -270,17 +275,6 @@ def fetch_cached_or_akshare_klines(
             "No local TongDaXin or project-cache K-lines cover this request. External supplementation is off; sync the local TongDaXin files or enable external supplementation.",
         )
 
-    if cached and cache_request_checked_today(state, start_date, end_date):
-        return KLineFetchResult(
-            local_klines,
-            local_source,
-            bool(local_klines),
-            _local_result_message(local_klines, start_date, end_date, True) + " The external range was already checked today.",
-            local_klines[0].time if local_klines else None,
-            local_klines[-1].time if local_klines else None,
-            from_cache=bool(local_klines),
-        )
-
     fetch_start = _next_request_date(local_klines[-1].time) if local_klines else _incremental_fetch_start(state, start_date)
     if _date_key(fetch_start) > _date_key(end_date):
         return KLineFetchResult(
@@ -295,6 +289,23 @@ def fetch_cached_or_akshare_klines(
 
     fetch_result = fetch_akshare_klines(symbol, period, fetch_start, end_date, adjust)
     if fetch_result.ok:
+        local_last = local_klines[-1].time if local_klines else None
+        provider_last = fetch_result.source_last_kline_time
+        if local_last and provider_last and _date_key(provider_last) <= _date_key(local_last):
+            message = (
+                f"外部数据未更新：本地最新 {local_last}，外部源最新 {provider_last}；"
+                f"已尝试请求 {fetch_start} 至 {end_date}。"
+            )
+            return KLineFetchResult(
+                local_klines,
+                f"{local_source}+external-not-updated",
+                True,
+                message,
+                local_klines[0].time,
+                local_klines[-1].time,
+                from_cache=True,
+                failed_sources=fetch_result.failed_sources,
+            )
         upsert_cached_klines(
             symbol=symbol,
             period=period,
@@ -311,7 +322,7 @@ def fetch_cached_or_akshare_klines(
             merged,
             f"{merged_source}+{fetch_result.source}" if tdx_klines else f"local-cache+{fetch_result.source}",
             True,
-            f"{_local_result_message(merged, start_date, end_date, True)} External supplementation requested {fetch_start} to {end_date} and saved successful bars to the project cache.",
+            f"{_local_result_message(merged, start_date, end_date, True)} External supplementation requested {fetch_start} to {end_date}; provider returned through {fetch_result.source_last_kline_time}; saved to project cache.",
             merged[0].time if merged else fetch_result.source_first_kline_time,
             merged[-1].time if merged else fetch_result.source_last_kline_time,
             from_cache=bool(local_klines),
@@ -381,7 +392,7 @@ def _local_result_message(klines: list[KLine], start_date: str, end_date: str, a
 
 
 def _last_kline_date(klines: list[KLine]) -> str:
-    return _date_text(klines[-1].time)
+    return _date_key(klines[-1].time)
 
 
 def _next_request_date(value: str) -> str:

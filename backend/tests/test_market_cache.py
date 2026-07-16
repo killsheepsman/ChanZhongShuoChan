@@ -76,13 +76,13 @@ class MarketCacheTests(unittest.TestCase):
             "2026-07-01 09:35:00",
             "2026-07-01 09:35:00",
         )
-        with patch("app.services.stock_data.fetch_akshare_klines", return_value=remote) as fetch:
+        with patch("app.services.stock_data.load_tdx2db_klines", return_value=[]), patch("app.services.stock_data.fetch_akshare_klines", return_value=remote) as fetch:
             first = stock_data.fetch_cached_or_akshare_klines("000001", "5", "20260701", "20260701", "qfq", allow_external=True)
             self.assertTrue(first.ok)
             self.assertTrue(first.cache_updated)
             self.assertEqual(fetch.call_count, 1)
 
-        with patch("app.services.stock_data.fetch_akshare_klines", side_effect=AssertionError("network should not be called")):
+        with patch("app.services.stock_data.load_tdx2db_klines", return_value=[]), patch("app.services.stock_data.fetch_akshare_klines", side_effect=AssertionError("network should not be called")):
             second = stock_data.fetch_cached_or_akshare_klines("000001", "5", "20260701", "20260701", "qfq")
         self.assertTrue(second.ok)
         self.assertTrue(second.from_cache)

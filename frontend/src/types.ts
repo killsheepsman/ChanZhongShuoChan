@@ -274,6 +274,7 @@ export interface Tdx2DbStatus {
   detected_path: string | null;
   path_valid: boolean;
   database_path: string;
+  database_files?: Array<{ path: string; bytes: number }>;
   installed: boolean;
   executable: string;
   sync: {
@@ -283,6 +284,12 @@ export interface Tdx2DbStatus {
     finished_at: string | null;
     exit_code: number | null;
     running: boolean;
+    processed_stocks: number;
+    total_stocks: number;
+    daily_bars_imported: number;
+    minute5_bars_imported: number;
+    current_code: string | null;
+    daily_failed: number;
   };
   tables: Tdx2DbTableSummary[];
 }

@@ -137,6 +137,25 @@ class Tdx2DbServiceTests(unittest.TestCase):
         self.assertEqual(rows[-1], ("2026-07-10 09:40:00", 10.2, 120.0))
         self.assertEqual(rows[1], ("2026-07-10 09:35:00", 10.3, 999.0))
 
+    def test_latest_minute5_time_supports_incremental_filter(self) -> None:
+        self.assertEqual(tdx2db_service._latest_minute5_time("603703"), "2026-07-10 09:40:00")
+        self.assertIsNone(tdx2db_service._latest_minute5_time("000002"))
+
+    def test_latest_daily_date_supports_incremental_filter(self) -> None:
+        self.assertEqual(tdx2db_service._latest_daily_date("603703"), "2026-07-10")
+        self.assertIsNone(tdx2db_service._latest_daily_date("000002"))
+
+    def test_daily_rows_read_date_from_dataframe_index(self) -> None:
+        class Frame:
+            columns = ["open", "high", "low", "close", "volume", "amount"]
+            index = [datetime(2026, 7, 10)]
+
+            def itertuples(self, index=False):
+                return iter([type("Row", (), {"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10, "amount": 20})()])
+
+        rows = tdx2db_service._daily_rows_from_frame(Frame(), "000001", 0)
+        self.assertEqual(rows[0][2], "2026-07-10")
+
     def test_session_resampling_never_crosses_the_lunch_break(self) -> None:
         morning = [datetime(2026, 7, 10, 9, 35) + timedelta(minutes=5 * index) for index in range(24)]
         afternoon = [datetime(2026, 7, 10, 13, 5) + timedelta(minutes=5 * index) for index in range(24)]
@@ -175,32 +194,17 @@ class Tdx2DbServiceTests(unittest.TestCase):
             [("000001", "Ping An"), ("603703", "Shengyang")],
         )
 
-    def test_sync_uses_incremental_sqlite_command(self) -> None:
+    def test_sync_is_owned_by_the_api_and_does_not_spawn_detached_process(self) -> None:
         tdx_path = Path(self.temp_dir.name) / "new_tdx64"
         (tdx_path / "vipdoc").mkdir(parents=True)
         tdx2db_service.configure_tdx2db(str(tdx_path))
-        calls: list[tuple[list[str], dict]] = []
-
-        def fake_popen(command, **kwargs):
-            calls.append((command, kwargs))
-            return CompletedProcess()
-
-        with patch("app.services.tdx2db_service._tdx2db_executable", return_value="tdx2db.exe"), patch(
-            "app.services.tdx2db_service.subprocess.Popen", side_effect=fake_popen
-        ), patch("app.services.tdx2db_service.threading.Thread", ImmediateThread):
+        with patch("app.services.tdx2db_service.threading.Thread", ImmediateThread), patch(
+            "app.services.tdx2db_service._backfill_local_minute5_history"
+        ) as importer:
             status = tdx2db_service.start_tdx2db_sync()
 
-        self.assertEqual(len(calls), 1)
-        command, kwargs = calls[0]
-        self.assertEqual(
-            command,
-            [
-                "tdx2db.exe", "--tdx-path", str(tdx_path), "--db-type", "sqlite",
-                "--db-name", "chanlun_tdx", "--no-tqdm", "sync",
-            ],
-        )
-        self.assertEqual(kwargs["cwd"], str(tdx2db_service.DATA_DIR))
-        self.assertEqual(status["sync"]["status"], "completed")
+        importer.assert_called_once_with(str(tdx_path))
+        self.assertEqual(status["sync"]["status"], "running")
 
 
 if __name__ == "__main__":

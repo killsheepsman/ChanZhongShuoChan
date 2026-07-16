@@ -20,6 +20,8 @@ from app.services.tdx2db_service import (
     init_tdx2db,
     start_tdx2db_sync,
     stop_tdx2db_sync,
+    shutdown_tdx2db_sync,
+    optimize_tdx2db,
 )
 from app.services.signal_store import (
     count_current_symbols,
@@ -72,6 +74,11 @@ def startup() -> None:
     init_market_cache()
     init_analysis_cache()
     init_tdx2db()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    shutdown_tdx2db_sync()
 
 
 @app.get("/api/health")
@@ -205,6 +212,14 @@ def start_tdx2db_history_backfill() -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/tdx2db/optimize")
+def optimize_tdx2db_source() -> dict:
+    try:
+        return optimize_tdx2db()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/signal-scan/start")

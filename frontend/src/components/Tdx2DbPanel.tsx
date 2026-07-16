@@ -9,6 +9,7 @@ interface Tdx2DbPanelProps {
   onStart: () => void;
   onBackfill: () => void;
   onStop: () => void;
+  onOptimize: () => void;
 }
 
 const PERIOD_LABELS: Record<string, string> = {
@@ -19,12 +20,14 @@ const PERIOD_LABELS: Record<string, string> = {
   "60": "60分钟",
 };
 
-export function Tdx2DbPanel({ status, loading, error, onConfigure, onStart, onBackfill, onStop }: Tdx2DbPanelProps) {
+export function Tdx2DbPanel({ status, loading, error, onConfigure, onStart, onBackfill, onStop, onOptimize }: Tdx2DbPanelProps) {
   const [tdxPath, setTdxPath] = useState("");
   const sync = status?.sync;
   const syncStatus = sync?.status ?? "idle";
   const syncActive = Boolean(sync?.running || syncStatus === "running" || syncStatus === "stopping");
-  const canStart = Boolean(status?.installed && status?.path_valid && !syncActive);
+  // The project-owned importer reads vipdoc directly; the optional tdx2db CLI
+  // is no longer required to start daily/5-minute synchronization.
+  const canStart = Boolean(status?.path_valid && !syncActive);
   const syncStatusLabel: Record<string, string> = {
     idle: "等待启动",
     running: "同步中",
@@ -62,28 +65,23 @@ export function Tdx2DbPanel({ status, loading, error, onConfigure, onStart, onBa
       <button className="small-button" type="button" disabled={loading || !syncActive || syncStatus === "stopping"} onClick={onStop}>
         停止
       </button>
+      <button className="small-button" type="button" disabled={loading || syncActive} onClick={onOptimize} title="删除15/30/60分钟冗余表并压缩SQLite数据库，必须先停止同步。">
+        清理冗余并压缩
+      </button>
       <div className="tdx2db-summary">
-        <span className={status?.installed ? "tdx2db-ready" : "tdx2db-warning"}>
-          {status?.installed ? "tdx2db 已安装" : "缺少 tdx2db，先点击一键安装依赖"}
-        </span>
+        <span className="tdx2db-ready">项目本地导入器已就绪</span>
         <span className={status?.path_valid ? "tdx2db-ready" : "tdx2db-warning"}>
           {status?.path_valid ? "通达信目录有效" : "未配置有效通达信目录"}
         </span>
         <span className={`tdx2db-sync-state tdx2db-sync-${syncStatus}`}>同步状态：{syncStatusLabel[syncStatus] ?? syncStatus}</span>
-        <span>详情：{sync?.message ?? "等待手动启动"}</span>
+        {sync && sync.total_stocks > 0 ? (
+          <span>日线：{sync.processed_stocks}/{sync.total_stocks}只，累计{sync.daily_bars_imported.toLocaleString()}根，当前{sync.current_code ?? "-"}；5分钟K线：{sync.processed_stocks}/{sync.total_stocks}只，累计{sync.minute5_bars_imported.toLocaleString()}根，当前{sync.current_code ?? "-"}</span>
+        ) : (
+          <span>详情：{sync?.message ?? "等待手动启动"}</span>
+        )}
         {status?.database_path && <span className="tdx2db-path" title={status.database_path}>数据库：{status.database_path}</span>}
       </div>
-      {status?.tables?.length ? (
-        <div className="tdx2db-tables" aria-label="本地行情表统计">
-          {status.tables.map((table) => (
-            <span key={table.table} title={`${table.first_time ?? "-"} 至 ${table.last_time ?? "-"}`}>
-              {PERIOD_LABELS[table.period] ?? table.period}：{table.stock_count} 股 / {table.bar_count} 根
-            </span>
-          ))}
-        </div>
-      ) : (
-        <span className="tdx2db-empty">尚未生成本地行情库；同步只在点击“增量同步”后开始。</span>
-      )}
+      <span className="tdx2db-empty">日线和5分钟均按数据库最新时间增量同步，已有K线不会重复写入。</span>
       {error && <div className="tdx2db-error" role="alert">{error}</div>}
     </section>
   );

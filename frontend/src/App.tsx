@@ -14,6 +14,7 @@ import {
   startTdx2DbSync,
   startTdx2DbHistoryBackfill,
   stopTdx2DbSync,
+  optimizeTdx2Db,
 } from "./lib/api";
 import type { AnalysisResponse, Signal, SignalScanMatch, StockOption, Tdx2DbStatus } from "./types";
 
@@ -181,6 +182,18 @@ export function App() {
     }
   }
 
+  async function optimizeTdxDb() {
+    setTdx2dbLoading(true);
+    setTdx2dbError(null);
+    try {
+      setTdx2dbStatus(await optimizeTdx2Db());
+    } catch (err) {
+      setTdx2dbError(err instanceof Error ? err.message : "清理通达信本地库失败");
+    } finally {
+      setTdx2dbLoading(false);
+    }
+  }
+
   function selectScanMatch(match: SignalScanMatch) {
     const nextParams = { ...params, symbol: match.code, period: scanParams.period };
     setSelectedScanMatchKey(`${match.code}|${match.time}`);
@@ -266,6 +279,16 @@ export function App() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [tdx2dbVisible, tdxSyncActive]);
+
+  useEffect(() => {
+    const stopOnPageClose = () => {
+      if (!tdxSyncActive) return;
+      const base = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+      navigator.sendBeacon(`${base}/api/tdx2db/sync/stop`);
+    };
+    window.addEventListener("pagehide", stopOnPageClose);
+    return () => window.removeEventListener("pagehide", stopOnPageClose);
+  }, [tdxSyncActive]);
 
   useEffect(() => {
     void fetchStocks()
@@ -380,6 +403,7 @@ export function App() {
               onStart={() => void startTdxSync()}
               onBackfill={() => void startTdxHistoryBackfill()}
               onStop={() => void stopTdxSync()}
+              onOptimize={() => void optimizeTdxDb()}
             />
           )}
           <ChartPanel data={data} focusedSignal={focusedSignal} chartHeight={chartHeight} layers={layers} />

@@ -18,6 +18,9 @@ DATA_DIR = PROJECT_ROOT / "data"
 CONFIG_PATH = DATA_DIR / "tdx2db_config.json"
 TDX_DB_NAME = "chanlun_tdx"
 TDX_DB_PATH = DATA_DIR / f"{TDX_DB_NAME}.db"
+TDX_SH_DB_PATH = DATA_DIR / f"{TDX_DB_NAME}_sh.db"
+TDX_SZ_DB_PATH = DATA_DIR / f"{TDX_DB_NAME}_sz.db"
+STATS_PATH = DATA_DIR / "tdx2db_stats.json"
 LOG_PATH = PROJECT_ROOT / "logs" / "tdx2db-sync.log"
 
 _TABLES = {
@@ -48,6 +51,12 @@ _SYNC_STATE: dict[str, Any] = {
     "started_at": None,
     "finished_at": None,
     "exit_code": None,
+    "processed_stocks": 0,
+    "total_stocks": 0,
+    "daily_bars_imported": 0,
+    "minute5_bars_imported": 0,
+    "current_code": None,
+    "daily_failed": 0,
 }
 
 
@@ -82,11 +91,10 @@ def get_tdx2db_status() -> dict[str, Any]:
     config = _read_config()
     configured_path = str(config.get("tdx_path") or "")
     detected_path = detect_tdx_path()
-    executable = _tdx2db_executable()
     with _SYNC_LOCK:
         process = _SYNC_PROCESS
         thread = _SYNC_THREAD
-        running = bool((process and process.poll() is None) or (thread and thread.is_alive()))
+        running = bool((process and process.poll() is None) or (thread and getattr(thread, "is_alive", lambda: False)()))
         sync = dict(_SYNC_STATE)
     sync["running"] = running
     return {
@@ -94,8 +102,9 @@ def get_tdx2db_status() -> dict[str, Any]:
         "detected_path": detected_path,
         "path_valid": _is_tdx_path(configured_path),
         "database_path": str(TDX_DB_PATH),
-        "installed": bool(executable),
-        "executable": executable or "",
+        "database_files": _database_files(),
+        "installed": True,
+        "executable": "项目内置本地导入器",
         "sync": sync,
         "tables": _database_summary(),
     }
@@ -103,87 +112,41 @@ def get_tdx2db_status() -> dict[str, Any]:
 
 def start_tdx2db_sync(full_history: bool = False) -> dict[str, Any]:
     init_tdx2db()
+    _invalidate_stats_if_database_changed()
     config = _read_config()
     tdx_path = str(config.get("tdx_path") or "")
     if not _is_tdx_path(tdx_path):
         raise ValueError("TongDaXin data directory is not configured. Select the folder containing vipdoc first.")
 
-    global _SYNC_PROCESS, _SYNC_THREAD
-    if full_history:
-        history_thread: threading.Thread | None = None
-        with _SYNC_LOCK:
-            process_running = bool(_SYNC_PROCESS and _SYNC_PROCESS.poll() is None)
-            thread_running = bool(_SYNC_THREAD and _SYNC_THREAD.is_alive())
-            if not process_running and not thread_running:
-                _SYNC_CANCEL_EVENT.clear()
-                _SYNC_STATE.update(
-                    {
-                        "status": "running",
-                        "message": "Reading local TongDaXin .lc5 history into the project database.",
-                        "started_at": _now(),
-                        "finished_at": None,
-                        "exit_code": None,
-                    }
-                )
-                history_thread = threading.Thread(
-                    target=_backfill_local_minute5_history,
-                    args=(tdx_path,),
-                    daemon=True,
-                )
-                _SYNC_THREAD = history_thread
-        if history_thread is not None:
-            history_thread.start()
-        return get_tdx2db_status()
-
-    executable = _tdx2db_executable()
-    if not executable:
-        raise RuntimeError("tdx2db is not installed. Run the project's Install Dependencies command after the network is available.")
-
-    watcher: threading.Thread | None = None
+    global _SYNC_THREAD
+    sync_thread: threading.Thread | None = None
     with _SYNC_LOCK:
-        process_running = bool(_SYNC_PROCESS and _SYNC_PROCESS.poll() is None)
         thread_running = bool(_SYNC_THREAD and _SYNC_THREAD.is_alive())
-        if not process_running and not thread_running:
-            log_handle = LOG_PATH.open("a", encoding="utf-8")
-            command = [
-                executable,
-                "--tdx-path",
-                tdx_path,
-                "--db-type",
-                "sqlite",
-                "--db-name",
-                TDX_DB_NAME,
-                "--no-tqdm",
-                "sync",
-            ]
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=str(DATA_DIR),
-                    stdout=log_handle,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    creationflags=creationflags,
-                )
-            except Exception:
-                log_handle.close()
-                raise
-
-            _SYNC_PROCESS = process
+        if not thread_running:
+            _SYNC_CANCEL_EVENT.clear()
             _SYNC_STATE.update(
                 {
                     "status": "running",
-                    "message": "TongDaXin local files are synchronizing incrementally.",
+                    "message": "Reading local daily and 5-minute files into market shards.",
                     "started_at": _now(),
                     "finished_at": None,
                     "exit_code": None,
+                    "processed_stocks": 0,
+                    "total_stocks": 0,
+                    "daily_bars_imported": 0,
+                    "minute5_bars_imported": 0,
+                    "current_code": None,
+                    "daily_failed": 0,
                 }
             )
-            watcher = threading.Thread(target=_watch_sync_process, args=(process, log_handle), daemon=True)
-
-    if watcher is not None:
-        watcher.start()
+            sync_thread = threading.Thread(
+                target=_sync_local_daily_minute5,
+                args=(tdx_path, full_history),
+                daemon=True,
+            )
+            _SYNC_THREAD = sync_thread
+    if sync_thread is not None:
+        sync_thread.start()
     return get_tdx2db_status()
 
 
@@ -202,12 +165,60 @@ def stop_tdx2db_sync() -> dict[str, Any]:
     return get_tdx2db_status()
 
 
+def optimize_tdx2db() -> dict[str, Any]:
+    """Remove generated higher-period tables and compact the local SQLite file."""
+    with _SYNC_LOCK:
+        active = bool(_SYNC_THREAD and _SYNC_THREAD.is_alive()) or bool(_SYNC_PROCESS and _SYNC_PROCESS.poll() is None)
+    if active:
+        raise RuntimeError("请先停止通达信同步，再执行数据库清理")
+    before = TDX_DB_PATH.stat().st_size if TDX_DB_PATH.exists() else 0
+    removed: list[str] = []
+    if TDX_DB_PATH.exists():
+        with _db_connection() as conn:
+            for table in ("minute15_data", "minute30_data", "minute60_data"):
+                if _table_exists(conn, table):
+                    conn.execute(f"DROP TABLE {table}")
+                    removed.append(table)
+            conn.commit()
+            conn.execute("VACUUM")
+    _write_stats_cache([])
+    after = TDX_DB_PATH.stat().st_size if TDX_DB_PATH.exists() else 0
+    return {**get_tdx2db_status(), "optimization": {"removed_tables": removed, "before_bytes": before, "after_bytes": after}}
+
+
+def shutdown_tdx2db_sync(timeout: float = 5.0) -> None:
+    """Stop project-owned synchronization when the API process exits."""
+    global _SYNC_PROCESS
+    with _SYNC_LOCK:
+        process = _SYNC_PROCESS
+        thread = _SYNC_THREAD
+        _SYNC_CANCEL_EVENT.set()
+        if process and process.poll() is None:
+            process.terminate()
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=timeout)
+    if process and process.poll() is None:
+        process.kill()
+    _SYNC_PROCESS = None
+
+
+def _sync_local_daily_minute5(tdx_path: str, full_history: bool) -> None:
+    """Run the cancellable local importer in the API-owned thread.
+
+    The importer currently writes the canonical 5-minute table and stock metadata;
+    higher minute periods are derived on read and are never generated by sync.
+    """
+    _backfill_local_minute5_history(tdx_path)
+
+
 def _backfill_local_minute5_history(tdx_path: str) -> None:
     """Import raw TongDaXin lc5 files directly, including bars older than the DB tail."""
     global _SYNC_THREAD
     imported_bars = 0
+    imported_daily_bars = 0
     processed = 0
     failed = 0
+    daily_failed = 0
     try:
         from tdx2db.reader import TdxDataReader
 
@@ -224,8 +235,22 @@ def _backfill_local_minute5_history(tdx_path: str) -> None:
             code = _plain_code(source_code)
             market = 1 if source_code.lower().startswith("sh") else 0
             try:
+                try:
+                    daily_frame = reader.read_daily_data(market, code)
+                    daily_rows = _daily_rows_from_frame(daily_frame, code, market)
+                    latest_daily = _latest_daily_date(code)
+                    if latest_daily:
+                        daily_rows = [row for row in daily_rows if row[2] > latest_daily]
+                    imported_daily_bars += _upsert_daily_rows(daily_rows)
+                except Exception as exc:
+                    daily_failed += 1
+                    _append_sync_log(f"{_now()}  Daily import failed for {source_code}: {exc}\\n")
                 frame = reader.read_5min_data(market, code)
-                imported_bars += _upsert_minute5_rows(_minute5_rows_from_frame(frame, code, market))
+                rows = _minute5_rows_from_frame(frame, code, market)
+                latest_time = _latest_minute5_time(code)
+                if latest_time:
+                    rows = [row for row in rows if row[2] > latest_time]
+                imported_bars += _upsert_minute5_rows(rows)
                 _upsert_stock_info(code, str(stock.get("name") or code), market)
             except FileNotFoundError:
                 # TongDaXin may have daily data for a stock but no downloaded lc5 history.
@@ -238,9 +263,15 @@ def _backfill_local_minute5_history(tdx_path: str) -> None:
                 with _SYNC_LOCK:
                     _SYNC_STATE.update(
                         {
+                            "processed_stocks": processed,
+                            "total_stocks": total,
+                            "daily_bars_imported": imported_daily_bars,
+                            "minute5_bars_imported": imported_bars,
+                            "daily_failed": daily_failed,
+                            "current_code": code,
                             "message": (
-                                f"Local 5-minute history: {processed}/{total} stocks, "
-                                f"{imported_bars:,} bars imported; current {code}."
+                                f"日线 {processed}/{total} 只，新增 {imported_daily_bars:,} 根；"
+                                f"5分钟新增 {imported_bars:,} 根；日线失败 {daily_failed} 只；当前 {code}。"
                             )
                         }
                     )
@@ -252,26 +283,27 @@ def _backfill_local_minute5_history(tdx_path: str) -> None:
                 _SYNC_STATE.update(
                     {
                         "status": "stopped",
-                        "message": f"Local history import stopped after {processed}/{total} stocks; {imported_bars:,} bars imported.",
+                        "message": f"5分钟同步已停止：{processed}/{total} 只；累计 {imported_bars:,} 根。",
                         "finished_at": _now(),
                         "exit_code": None,
                     }
                 )
-            elif imported_bars == 0:
+            elif processed == 0:
                 _SYNC_STATE.update(
                     {
                         "status": "failed",
-                        "message": "No readable local 5-minute bars were imported. Check the configured TongDaXin directory and lc5 files.",
+                        "message": "没有处理到股票，请检查通达信目录。",
                         "finished_at": _now(),
                         "exit_code": 1,
                     }
                 )
             else:
                 failure_note = f" ({failed} files skipped)" if failed else ""
+                _refresh_stats_snapshot()
                 _SYNC_STATE.update(
                     {
                         "status": "completed",
-                        "message": f"Local 5-minute history import completed: {processed}/{total} stocks, {imported_bars:,} bars written{failure_note}.",
+                        "message": f"5分钟增量同步完成：{processed}/{total} 只；新增 {imported_bars:,} 根{failure_note}。",
                         "finished_at": _now(),
                         "exit_code": 0,
                     }
@@ -313,6 +345,32 @@ def _minute5_rows_from_frame(frame: Any, code: str, market: int) -> list[tuple[A
     return rows
 
 
+def _daily_rows_from_frame(frame: Any, code: str, market: int) -> list[tuple[Any, ...]]:
+    rows: list[tuple[Any, ...]] = []
+    has_date_column = "date" in getattr(frame, "columns", []) or "datetime" in getattr(frame, "columns", [])
+    iterator = zip(frame.itertuples(index=False), frame.index) if not has_date_column else ((item, None) for item in frame.itertuples(index=False))
+    for item, index_value in iterator:
+        timestamp = getattr(item, "date", None)
+        if timestamp is None:
+            timestamp = getattr(item, "datetime", None)
+        if timestamp is None:
+            timestamp = index_value if index_value is not None else getattr(item, "name", None)
+        if not hasattr(timestamp, "strftime"):
+            continue
+        rows.append((code, market, timestamp.strftime("%Y-%m-%d"), _number(getattr(item, "open", 0)), _number(getattr(item, "high", 0)), _number(getattr(item, "low", 0)), _number(getattr(item, "close", 0)), _number(getattr(item, "volume", 0)), _number(getattr(item, "amount", 0))))
+    return rows
+
+
+def _upsert_daily_rows(rows: list[tuple[Any, ...]]) -> int:
+    if not rows:
+        return 0
+    with _db_connection() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS daily_data (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, market INTEGER NOT NULL, date TEXT NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL, amount REAL NOT NULL, UNIQUE(code, date))")
+        conn.executemany("INSERT INTO daily_data (code, market, date, open, high, low, close, volume, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(code, date) DO UPDATE SET market=excluded.market, open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close, volume=excluded.volume, amount=excluded.amount", rows)
+        conn.commit()
+    return len(rows)
+
+
 def _upsert_minute5_rows(rows: list[tuple[Any, ...]]) -> int:
     if not rows:
         return 0
@@ -336,6 +394,32 @@ def _upsert_minute5_rows(rows: list[tuple[Any, ...]]) -> int:
         )
         conn.commit()
     return len(rows)
+
+
+def _latest_daily_date(code: str) -> str | None:
+    if not TDX_DB_PATH.exists():
+        return None
+    try:
+        with _db_connection() as conn:
+            if not _table_exists(conn, "daily_data"):
+                return None
+            row = conn.execute("SELECT MAX(date) FROM daily_data WHERE code = ?", (code,)).fetchone()
+            return str(row[0])[:10] if row and row[0] else None
+    except sqlite3.Error:
+        return None
+
+
+def _latest_minute5_time(code: str) -> str | None:
+    if not TDX_DB_PATH.exists():
+        return None
+    try:
+        with _db_connection() as conn:
+            if not _table_exists(conn, "minute5_data"):
+                return None
+            row = conn.execute("SELECT MAX(datetime) FROM minute5_data WHERE code = ?", (code,)).fetchone()
+            return str(row[0]) if row and row[0] else None
+    except sqlite3.Error:
+        return None
 
 
 def _upsert_stock_info(code: str, name: str, market: int) -> None:
@@ -555,6 +639,16 @@ def _watch_sync_process(process: subprocess.Popen[str], log_handle: Any) -> None
 def _database_summary() -> list[dict[str, Any]]:
     if not TDX_DB_PATH.exists():
         return []
+    cached = _read_stats_cache()
+    if cached:
+        return cached
+    # Never perform a multi-GB aggregate during a status poll. The importer
+    # writes this snapshot at completion; an absent snapshot means statistics
+    # are intentionally unavailable until the next completed sync.
+    return []
+
+
+def _refresh_stats_snapshot() -> None:
     summaries: list[dict[str, Any]] = []
     try:
         with _db_connection() as conn:
@@ -562,22 +656,55 @@ def _database_summary() -> list[dict[str, Any]]:
                 if not _table_exists(conn, table):
                     continue
                 time_column = "date" if period == "daily" else "datetime"
-                row = conn.execute(
-                    f"SELECT COUNT(*) AS bars, COUNT(DISTINCT code) AS stocks, MIN({time_column}) AS first_time, MAX({time_column}) AS last_time FROM {table}"
-                ).fetchone()
-                summaries.append(
-                    {
-                        "period": period,
-                        "table": table,
-                        "bar_count": int(row["bars"] or 0),
-                        "stock_count": int(row["stocks"] or 0),
-                        "first_time": _time_text(row["first_time"]) if row["first_time"] else None,
-                        "last_time": _time_text(row["last_time"]) if row["last_time"] else None,
-                    }
-                )
+                row = conn.execute(f"SELECT COUNT(*) AS bars, COUNT(DISTINCT code) AS stocks, MIN({time_column}) AS first_time, MAX({time_column}) AS last_time FROM {table}").fetchone()
+                summaries.append({"period": period, "table": table, "bar_count": int(row["bars"] or 0), "stock_count": int(row["stocks"] or 0), "first_time": _time_text(row["first_time"]) if row["first_time"] else None, "last_time": _time_text(row["last_time"]) if row["last_time"] else None})
     except sqlite3.Error:
+        return
+    _write_stats_cache(summaries)
+
+
+def _database_files() -> list[dict[str, Any]]:
+    return [
+        {"path": str(path), "bytes": path.stat().st_size}
+        for path in (TDX_DB_PATH, TDX_SH_DB_PATH, TDX_SZ_DB_PATH)
+        if path.exists()
+    ]
+
+
+def _read_stats_cache() -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(STATS_PATH.read_text(encoding="utf-8"))
+        if payload.get("database_fingerprint") != _database_fingerprint():
+            return []
+        return payload.get("tables", []) if isinstance(payload, dict) else []
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return []
-    return summaries
+
+
+def _write_stats_cache(tables: list[dict[str, Any]]) -> None:
+    try:
+        STATS_PATH.write_text(json.dumps({"updated_at": _now(), "database_fingerprint": _database_fingerprint(), "tables": tables}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _database_fingerprint() -> dict[str, Any] | None:
+    if not TDX_DB_PATH.exists():
+        return None
+    try:
+        stat = TDX_DB_PATH.stat()
+        return {"path": str(TDX_DB_PATH), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    except OSError:
+        return None
+
+
+def _invalidate_stats_if_database_changed() -> None:
+    try:
+        payload = json.loads(STATS_PATH.read_text(encoding="utf-8"))
+        if payload.get("database_fingerprint") != _database_fingerprint():
+            STATS_PATH.unlink(missing_ok=True)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
 
 
 def _tdx2db_executable() -> str | None:
